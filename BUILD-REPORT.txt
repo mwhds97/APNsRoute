@@ -1,0 +1,24 @@
+APNsRoute 1.1.0 release build report
+Target: rootful iOS 14.x; intended device includes iPhone SE (2020), A13.
+Release promotion of the user-approved experimental17 source. Routing, the 13 rules and doctor protocol 16 are retained. Installation enables the saved mode and requests one apsd restart. The release installer is verified with staged scripts; no remote phone installation is performed here.
+
+clang version 13.0.0 (https://github.com/apple/llvm-project.git f765bf5b71fd3637a6f6d1d3e6ab95ca91892a0c)
+Target: x86_64-unknown-linux-gnu
+Thread model: posix
+InstalledDir: /workspace/scratch/63de5f9f4e12/apnsroute-build-cache/toolchain/bin
+SDK: iPhoneOS14.5.sdk
+arm64: Mach-O dylib; CPU subtype=0x00000000; dependencies=['/System/Library/Frameworks/Network.framework/Network', '/usr/lib/libSystem.B.dylib', '/usr/lib/libnetwork.dylib']
+arm64e: Mach-O dylib; CPU subtype=0x00000002; dependencies=['/System/Library/Frameworks/Network.framework/Network', '/usr/lib/libSystem.B.dylib', '/usr/lib/libnetwork.dylib']
+ARM64E LIMITATION: This Linux compiler emits the legacy arm64e ABI.
+The linker emits its known incompatible-arm64e-ABI warning; it is retained here.
+This C-only dylib has no Obj-C or CFString metadata. That reduces ABI conversion issues
+but does NOT prove that this binary loads on the target jailbreak.
+This build uses the same legacy ABI family as 0.1.2, but a different clang 13 revision; device validation is required.
+A native Xcode/Theos build is the alternative if legacy ABI loading fails.
+arm64e: known legacy ABI linker warnings: 9
+Doctor: standalone arm64, no added entitlements, read-only socket inspection.
+Fat dylib assembled with arm64 and arm64e slices; ad-hoc signed with ldid.
+File/unified logging absent. Doctor uses fixed-size Darwin notification state, not log files.
+Dylib SHA-256: e776ab10be475a719e6533987512ca6b3e6f583d3ef36e4092785ae8540ed300
+Package SHA-256: 2fb72c1ca686e677d4ca59c5c25f3beb9fd0e8769a981e382ca82181215db4d4
+On configure, the package saves enabled mode and requests one apsd restart. The legacy conffile payload is retained to avoid a content-change prompt; postinst performs activation on fresh install, reinstall and upgrade.

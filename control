@@ -1,0 +1,9 @@
+Package: local.apnsroute
+Name: APNsRoute
+Version: 1.1.0
+Architecture: iphoneos-arm
+Description: Domain/IP rule routing for apsd through a checked NECP tunnel binding with Cellular/Internet agent preference. Release for rootful iOS 14; automatically enabled on installation, with doctor diagnostics and no logging.
+Maintainer: Local Development
+Author: Local Development
+Section: Tweaks
+Depends: firmware (>= 14.0), firmware (<< 15.0), mobilesubstrate | com.ex.substitute

@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+mode_path='/Library/Application Support/APNsRoute/mode'
+usage() {
+    echo 'Usage: apnsroutectl status|doctor|restart|enable|disable'
+    echo 'enable = domain/IP rule routing; disable = native routing with read-only observers'
+    echo 'Mode changes and restart terminate apsd once; launchd should relaunch it.'
+}
+configuration() {
+    saved=''
+    if [ -r "$mode_path" ]; then
+        IFS= read -r saved < "$mode_path" || true
+    fi
+    case "$saved" in
+        unbind) echo 'Configured state: enabled' ;;
+        *) echo 'Configured state: disabled (native routing; doctor observers requested)' ;;
+    esac
+    echo 'This shows the saved setting; it does not verify loading or routing.'
+}
+action="${1:-status}"
+if [ "$#" -gt 1 ]; then usage >&2; exit 2; fi
+case "$action" in
+    status) configuration; exit 0 ;;
+    doctor)
+        configuration
+        if command -v dpkg-query >/dev/null 2>&1; then
+            dpkg-query -W -f='${Package}: ${Version} (${Status})\n' local.apnsroute com.ex.substitute mobilesubstrate 2>/dev/null || true
+        fi
+        exec /usr/libexec/apnsroute-diag
+        ;;
+    enable) mode=unbind ;;
+    disable) mode=disabled ;;
+    restart) mode='' ;;
+    *) usage >&2; exit 2 ;;
+esac
+if [ "$(id -u)" -ne 0 ]; then echo 'Run this command as root.' >&2; exit 1; fi
+if [ -n "$mode" ]; then
+    temporary="${mode_path}.tmp.$$"
+    trap 'rm -f "$temporary"' EXIT HUP INT TERM
+    (umask 022; printf '%s\n' "$mode" > "$temporary")
+    chmod 644 "$temporary"
+    mv -f "$temporary" "$mode_path"
+    trap - EXIT HUP INT TERM
+    configuration
+fi
+if command -v killall >/dev/null 2>&1; then
+    if killall -TERM apsd; then
+        echo 'Sent SIGTERM to apsd. launchd should relaunch it with the saved setting.'
+    else
+        echo 'Could not restart apsd. Configuration is saved; restart it manually.' >&2
+        exit 1
+    fi
+else
+    echo 'killall is unavailable. Configuration is saved; run:' >&2
+    echo 'launchctl kill SIGTERM system/com.apple.apsd' >&2
+    exit 1
+fi

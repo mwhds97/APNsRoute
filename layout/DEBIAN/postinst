@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+# Keep the old conffile payload for prompt-free upgrades. Activation is done
+# here after all package files are installed, using the same controller as CLI.
+if [ "${1:-}" != configure ]; then
+    exit 0
+fi
+
+echo 'APNsRoute installed. Enabling routing and restarting apsd once.'
+if /usr/bin/apnsroutectl enable; then
+    echo 'After apsd relaunches, run apnsroutectl doctor to check loading and routing.'
+else
+    # A failed restart must not leave an otherwise installed package broken.
+    # A failed setting write, however, must not be reported as enabled.
+    mode_path='/Library/Application Support/APNsRoute/mode'
+    saved=''
+    if [ -r "$mode_path" ]; then
+        IFS= read -r saved < "$mode_path" || true
+    fi
+    if [ "$saved" != unbind ]; then
+        echo 'Automatic enablement failed. Resolve the reported error and reconfigure the package.' >&2
+        exit 1
+    fi
+    echo 'Enabled setting is saved, but automatic activation did not complete.' >&2
+    echo 'Run apnsroutectl restart, then apnsroutectl doctor after apsd relaunches.' >&2
+fi

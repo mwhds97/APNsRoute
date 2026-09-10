@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    remove|purge)
+        echo 'APNsRoute removed. Restart apsd to unload the already-loaded tweak:'
+        echo 'killall -TERM apsd'
+        ;;
+esac
