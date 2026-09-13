@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.2.0
+
+- Promotes the user-confirmed experimental6 routing and handover behavior to release, with package name APNsRoute, version 1.2.0 and build ID 0x01020000.
+- Records the successful cellular → Wi-Fi → cellular sequence in apsd PID 10284: ready couriers #2 → #5 → #10, one endpoint retirement request and no pending/awaiting objects or tracking skips at the snapshots. The user reported no crash.
+- Cleans lifecycle state names and initialization, centralizes transfer of held references for release outside the mutex, clarifies cancellation reentry, and removes an unused include. Keeps eligibility, timing, capacity, native callbacks and NECP results.
+- Retains all 13 rules, nine hooks, automatic enablement on install/upgrade, one installation reload, saved settings and doctor protocol v22. Runtime logging, probes and automatic apsd handover restarts remain absent.
+- Updates release documentation, upgrade/package gates and preservation evidence. Ten runtime units match optimized IR on both architectures after expected identity/name normalization; the refactored retirement unit passes source review, lifecycle regressions and sanitizer checks. Includes the unchanged working experimental6 rollback installer.
+
+## 1.1.1~experimental6
+
+- Records the reproduced SIGABRT on CFNetwork's connection queue and verifies that the loaded APNsRoute arm64e UUID matches experimental5. The assertion text is absent; autonomous terminal cancellation of a CFNetwork-owned connection is the leading hypothesis, not a symbolicated root cause.
+- Replaces automatic full force-cancel with public `nw_connection_cancel_current_endpoint`, requesting native endpoint fallback/failure. Resolves the API optionally, with no force-cancel fallback, callback fabrication, assertion suppression or connection-queue change. Existing owner-requested cancellation behavior is retained.
+- Keeps bounded registry ownership after the request for possible endpoint fallback on the same NW object. Reports an awaiting-native-result count, suppresses duplicate requests while awaiting, and rearms the object on native readiness. Native closure/owner cancellation/handler clear release ownership. No-response requests remain observable without escalation.
+- Protocol v22 has 185 fields and renames automatic retirement counts to endpoint requests. Object IDs identify NW objects, not TCP transports; fresh TCP/Surge entries must be checked separately.
+- Keeps all 13 rules, native NECP results, automatic install activation, one installation reload and doctor-only diagnostics. No automatic handover restart, extra create/start/send/receive, logging or probe is added.
+- Adds regression coverage for exact endpoint dispatch, missing capability, no forced fallback/synthetic callbacks, deferred native recovery, repeated handovers and object rearming. Host, sanitizer and package tests validate the code's contracts, not CFNetwork's internal assertion. TCP/Surge closure, notification recovery and absence of another crash require phone testing. Includes unchanged experimental4 and experimental1 rollback installers.
+
+## 1.1.1~experimental5 (withdrawn after reproduced CFNetwork abort)
+
+- Records successful notification arrival on experimental4 and the user's requirement to retire previous connections instead of reusing them. The three readings show a retained cellular courier #2, a separate Wi-Fi courier #4, and cancellation of #4 on return to cellular, all in apsd PID 9008.
+- Adds a public path monitor and an eight-slot owned registry. An observed Wi-Fi/cellular transition retires older established matching connections after a three-second window, with earlier cleanup permitted by fresh matched data on the current network. A cellular spare created during Wi-Fi is also older on the next transition. First-readiness generations protect connections still establishing at the transition.
+- Calls the guarded original force-cancel trampoline outside registry locks; native callbacks and apsd's retry decisions remain. Natural cancellation, terminal states and handler clearing release ownership. Unknown paths suspend retirement, rapid changes update one bounded timer, and failure leaves native lifetime.
+- Keeps all 13 rules, original Network parameters/queues, native NECP output, automatic installer enablement and doctor-only diagnostics. No automatic apsd handover restart, injected init/start/send/receive, logging or probes.
+- Protocol v21 has 184 fields: one retirement count per connection plus ten global retirement fields. Doctor reports monitor generation, pending/held counts, cancellation calls, reason, errors and skips. Calls do not establish closure or delivery.
+- Adds real-Blocks retirement tests for both directions, spare/fresh generations, callback reentry, bounded references/work, flaps, natural cleanup and unavailable startup. Host, sanitizer, cross-build and package gates pass. Includes unchanged experimental4 and experimental1 rollback installers. Device recovery and Surge closure remain unverified; brief delivery delays and native init requests are possible.
+
+## 1.1.1~experimental4
+
+- Restores experimental1 network behavior and unmodified NECP output. Removes experimental3's Wi-Fi viability mask after the user reported failed cellular recovery; experimental2's automatic apsd restart remains removed. The stale-entry issue is still unresolved.
+- Device evidence: result reads/masks stayed 4/0 on initial cellular-to-Wi-Fi handover. After manual break/return they reached 14/2; a separate handler failed with POSIX 50. The previous output could not pair these samples or identify the old courier.
+- Adds eight bounded NW connection observation rows: scalar IDs, latest handler/state, API/receive/byte/completion counts, caller cancellation counts, last error and last receive/cancel path. Never retains or asynchronously acts on connection pointers. Adds two public receive hooks with exact caller forwarding.
+- Adds the original parsed NECP flag bits to doctor without changing guarded-flag eligibility. All 13 rules and experimental1's caller-requested cancellation dispatch remain.
+- Protocol v20 has 166 fields, with dirty-field publication and retry of partial failures. Retains automatic installer enablement and one installation reload; no automatic handover intervention, runtime logging or active probes.
+- Includes the unchanged experimental1 rollback installer. Host and package validation cannot establish iPhone recovery or Surge cleanup; paired device observations are still needed.
+
+## 1.1.1~experimental3 (withdrawn)
+
+- Starts from experimental1 as requested; removes experimental2's automatic apsd restart and all associated controller/timer/descriptor code. Includes the original experimental1 rollback installer.
+- Retains all 13 domain/IP rules, the same submitted ADD bytes, seven hooks, experimental1 cancellation behavior, automatic installer activation, saved setting and doctor-only diagnostics.
+- Tracks the cellular intent of accepted ADDs that converted the exact Cellular / Internet agent requirement. Before delivering a validated result for that client, verifies the same tunnel is currently backed only by Wi-Fi. Clears caller-visible SATISFIED/FLOW_VIABLE bits so Network/apsd can react to the original cellular path becoming unavailable. Kernel state remains unchanged.
+- Covers cellular-specific retries on Wi-Fi as well as existing cellular clients. Ordinary Wi-Fi requests, disabled mode, unsupported layouts, different-interface flows, missing/ambiguous/replaced tunnels, mixed/unknown delegates and query failures retain their results.
+- Protocol v19 adds 10 fields separating policy status/counters/flags from raw kernel observations. No periodic work, synthetic notifications, new connection creation, autonomous cancellation, active probe or logging.
+- Host regressions cover exact eligibility, returned-root identity, flow aliases/removal, capacity, full-buffer validation, exact bit masks, retries, native cellular results, errno and diagnostic publication. On-device handover response remains unverified.
+
+## 1.1.1~experimental2 (reverted)
+
+- Used one bounded apsd restart after a verified cellular-to-Wi-Fi transition. User confirmed cleanup, then requested reversion because it briefly interrupted notifications and created new initialization sessions.
+
+## 1.1.1~experimental1
+
+- Investigates the report that captured cellular connections remain open in Surge after Wi-Fi connects. Graceful cancellation can negotiate a close; the report does not yet distinguish that delay from apsd retaining live connections or Surge retaining state.
+- While enabled, upgrades only rule-matched normal cancellations already requested by apsd to the existing original force-cancel trampoline. The same object and installed callbacks remain; no path monitor, active-connection cancellation, handover restart, timer or probe is introduced.
+- Retains native cancellation when disabled, unmatched or missing the force trampoline. Keeps explicit apsd force-cancel unchanged and prevents recursive escalation through synchronous normal-cancel delegation.
+- Adds four doctor fields in protocol v17 for aggregate cancellation counts and the last dispatch action. Counts report API calls, not confirmed Surge closures. Runtime logging remains absent.
+- Keeps all 13 rules, NECP input edits, routing/exclusion guards, automatic installation activation and settings path unchanged. Host cancellation/callback/diagnostic regressions and package checks cover the new code; on-device handover confirmation remains pending.
+
 ## 1.1.0
 
 - Promotes the approved experimental17 source to release, using the APNsRoute package name and a distinct release build ID.

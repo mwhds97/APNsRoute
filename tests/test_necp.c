@@ -305,6 +305,7 @@ int main(void) {
     const uint32_t blocked[]={1,2,4,0x200,0x400,0x800,0x1000,0x8000};
     for(unsigned i=0;i<sizeof(blocked)/sizeof(*blocked);++i) {
         n=fixture(b,hosts[0],443,2);n=tlv(b,n,250,&blocked[i],4);run(b,n,false,APR_BIND_UNSUPPORTED_FLAGS);
+        Inspection p={0};assert(inspect(b,n,&p));assert(p.constraints.request_flags==blocked[i]);
     }
     uint32_t flag=0x80;n=fixture(b,hosts[0],443,2);n=tlv(b,n,250,&flag,4);run(b,n,true,APR_BIND_ACCEPTED);
     flag=8;n=fixture(b,hosts[0],443,2);n=tlv(b,n,250,&flag,4);run(b,n,false,APR_BIND_NONE);

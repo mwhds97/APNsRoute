@@ -12,6 +12,7 @@ enum apr_constraint_bit {
 };
 typedef struct {
     uint32_t seen, restricted, inert, unsupported, first;
+    uint32_t request_flags;
     uint32_t blocked,agent_info,edit,check,check_index;
     uint8_t agent[64];
     /* All unique one-byte PROHIBIT_IF_TYPE values, including inactive zero.

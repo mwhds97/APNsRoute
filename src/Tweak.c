@@ -5,6 +5,7 @@
 #include "Process.h"
 #include "NWHooks.h"
 #include "NWObserver.h"
+#include "Retirement.h"
 #include <unistd.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -48,8 +49,9 @@ __attribute__((constructor)) static void apr_init(void) {
     else if (strcmp(mode,"disabled") && strcmp(mode,"observe")) {
         apr_diag_stage(APR_INVALID_MODE,0,false); return;
     }
-    /* Both modes install seven hooks. Only matched NECP ADD input may be
-       changed in enabled mode.
+    /* Both modes install nine hooks. Enabled mode changes matched NECP ADD
+       input, retires old matched endpoints on handover, and upgrades normal
+       cancellation already requested by apsd to force-close.
        The legacy saved value "observe" maps to this same disabled control. */
     APRHookFunction engine=apr_find_hook_engine();
     if (!engine) { apr_diag_stage(APR_NO_HOOK_ENGINE,0,apr_enabled); return; }
@@ -61,5 +63,10 @@ __attribute__((constructor)) static void apr_init(void) {
     install_hook(engine,"nw_connection_send",(void *)apr_nw_send,(void **)&apr_original_nw_send,APR_H_NW_SEND);
     install_hook(engine,"nw_connection_cancel",(void *)apr_nw_cancel,(void **)&apr_original_nw_cancel,APR_H_NW_CANCEL);
     install_hook(engine,"nw_connection_force_cancel",(void *)apr_nw_force_cancel,(void **)&apr_original_nw_force_cancel,APR_H_NW_FORCE);
+    install_hook(engine,"nw_connection_receive",(void *)apr_nw_receive,(void **)&apr_original_nw_receive,APR_H_NW_RECEIVE);
+    install_hook(engine,"nw_connection_receive_message",(void *)apr_nw_receive_message,(void **)&apr_original_nw_receive_message,APR_H_NW_RECEIVE_MESSAGE);
+    apr_retirement_init(apr_enabled,
+        apr_original_nw_start && apr_original_nw_state_handler && apr_original_nw_cancel &&
+        apr_original_nw_force_cancel && apr_nw_retirement_available() ? apr_nw_retire : NULL);
     apr_diag_stage(apr_enabled ? APR_READY : APR_NATIVE_READY,0,apr_enabled);
 }

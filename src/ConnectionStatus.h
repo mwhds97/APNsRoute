@@ -1,7 +1,11 @@
 #ifndef APNSROUTE_CONNECTION_STATUS_H
 #define APNSROUTE_CONNECTION_STATUS_H
 #include "DiagnosticFields.h"
-/* Public Network observations; no private proxy/parameter inspection. */
+/* Public Network observations and caller-requested cancellation dispatch. */
+enum apr_cancel_action {
+    APR_CANCEL_NONE, APR_CANCEL_NATIVE, APR_CANCEL_IMMEDIATE,
+    APR_CANCEL_UNAVAILABLE, APR_CANCEL_APP_FORCE
+};
 enum {
     APR_CREATE_SEEN=1, APR_CREATE_OK=2,
     APR_START_SEEN=1,

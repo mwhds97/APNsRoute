@@ -11,6 +11,7 @@
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int tokens[APR_DIAG_SLOTS];
 static uint64_t states[APR_DIAG_SLOTS];
+static bool transport_dirty[APR_TRANSPORT_SLOTS];
 static bool publish(unsigned slot) {
     return tokens[slot]>=0 && notify_set_state(tokens[slot],states[slot])==NOTIFY_STATUS_OK;
 }
@@ -24,7 +25,8 @@ void apr_diag_init(uint64_t incarnation) {
             (long)getpid(),(unsigned long long)incarnation,apr_diag_field_name(i));
         tokens[i]=-1;
         if (notify_register_check(name,&tokens[i]) != NOTIFY_STATUS_OK) tokens[i]=-1;
-        publish(i);
+        bool ok=publish(i);
+        if(i>APR_TRANSPORT_FIRST_SLOT) transport_dirty[i-APR_TRANSPORT_FIRST_SLOT]=!ok;
     }
     errno=saved;
 }
@@ -79,14 +81,20 @@ static void transport_begin(void) {
     states[APR_TRANSPORT_FIRST_SLOT + APR_T_SEQ]=APR_DIAG_MAGIC | ++transport_sequence;transport_publication_ok=publish(APR_TRANSPORT_FIRST_SLOT + APR_T_SEQ);
 }
 static void transport_set(unsigned slot,uint32_t value) {
-    states[APR_TRANSPORT_FIRST_SLOT + slot]=APR_DIAG_MAGIC | value;
+    uint64_t next=APR_DIAG_MAGIC | value;
+    if(states[APR_TRANSPORT_FIRST_SLOT + slot]!=next) {
+        states[APR_TRANSPORT_FIRST_SLOT + slot]=next;transport_dirty[slot]=true;
+    }
 }
 static void transport_end(void) {
-    /* Re-publish every field so a later successful transaction also recovers
-       from a partial earlier write. Never certify an incomplete transaction. */
+    /* Publish changed fields and retry every failed field. Receive callbacks
+       need only update their own row, not every slot. The same even sequence
+       still certifies the whole snapshot; incomplete writes stay uncertified. */
     if(transport_publication_ok) {
-        for(unsigned slot=APR_TRANSPORT_FIRST_SLOT+1;slot<APR_DIAG_SLOTS;++slot)
-            if(!publish(slot)) transport_publication_ok=false;
+        for(unsigned slot=1;slot<APR_TRANSPORT_SLOTS;++slot) if(transport_dirty[slot]) {
+            if(publish(APR_TRANSPORT_FIRST_SLOT+slot)) transport_dirty[slot]=false;
+            else transport_publication_ok=false;
+        }
     }
     states[APR_TRANSPORT_FIRST_SLOT + APR_T_SEQ]=APR_DIAG_MAGIC | ++transport_sequence;
     if(transport_publication_ok) (void)publish(APR_TRANSPORT_FIRST_SLOT + APR_T_SEQ);
@@ -135,6 +143,46 @@ void apr_diag_nw_cancel_path(unsigned detail) {
     int saved=errno;pthread_mutex_lock(&lock);transport_begin();
     transport_set(APR_T_NW_CANCEL_PATH,detail);transport_end();pthread_mutex_unlock(&lock);errno=saved;
 }
+static void transport_increment(unsigned slot) {
+    uint32_t value=(uint32_t)states[APR_TRANSPORT_FIRST_SLOT+slot];
+    transport_set(slot,value==UINT32_MAX?value:value+1);
+}
+void apr_diag_connection(unsigned slot,const uint32_t value[APR_CONNECTION_FIELD_COUNT]) {
+    if(slot>=APR_CONNECTION_COUNT || !value) return;
+    int saved=errno;pthread_mutex_lock(&lock);transport_begin();
+    unsigned base=APR_T_CONN_0_ID+slot*APR_CONNECTION_FIELD_COUNT;
+    for(unsigned i=0;i<APR_CONNECTION_FIELD_COUNT;++i) transport_set(base+i,value[i]);
+    transport_end();pthread_mutex_unlock(&lock);errno=saved;
+}
+void apr_diag_connection_overflow(void) {
+    int saved=errno;pthread_mutex_lock(&lock);transport_begin();
+    transport_increment(APR_T_CONNECTION_OVERFLOW);
+    transport_end();pthread_mutex_unlock(&lock);errno=saved;
+}
+void apr_diag_retirement(const APRRetirementStatus *status) {
+    if(!status) return;
+    int saved=errno;pthread_mutex_lock(&lock);transport_begin();
+    transport_set(APR_T_RET_STATUS,status->status);
+    transport_set(APR_T_RET_NETWORK,status->network);
+    transport_set(APR_T_RET_EPOCH,status->epoch);
+    transport_set(APR_T_RET_HELD,status->held);
+    transport_set(APR_T_RET_PENDING,status->pending);
+    transport_set(APR_T_RET_REQUESTS,status->requests);
+    transport_set(APR_T_RET_LAST_ID,status->last_id);
+    transport_set(APR_T_RET_REASON,status->reason);
+    transport_set(APR_T_RET_ERROR,status->error);
+    transport_set(APR_T_RET_SKIPPED,status->skipped);
+    transport_set(APR_T_RET_AWAITING,status->awaiting);
+    transport_end();pthread_mutex_unlock(&lock);errno=saved;
+}
+void apr_diag_nw_cancel(unsigned action) {
+    if(action<APR_CANCEL_NATIVE || action>APR_CANCEL_APP_FORCE) return;
+    int saved=errno;pthread_mutex_lock(&lock);transport_begin();
+    transport_increment(action==APR_CANCEL_APP_FORCE?APR_T_NW_CANCEL_APP_FORCE:APR_T_NW_CANCEL_NORMAL);
+    if(action==APR_CANCEL_IMMEDIATE) transport_increment(APR_T_NW_CANCEL_IMMEDIATE);
+    transport_set(APR_T_NW_CANCEL_ACTION,action);
+    transport_end();pthread_mutex_unlock(&lock);errno=saved;
+}
 /* Latest matched ADD and later results for exactly that client/its registered
    flows. Generation identifiers prevent older clients overwriting this pair. */
 static uint32_t binding_generation;
@@ -145,6 +193,7 @@ uint32_t apr_diag_binding(uint32_t status,uint32_t index,int error,const APRCons
         transport_set(APR_T_NECP_BINDING_ID,generation);transport_set(APR_T_NECP_BINDING_INDEX,index);transport_set(APR_T_NECP_BINDING_STATUS,status);
         transport_set(APR_T_NECP_BINDING_ERRNO,(uint32_t)error);transport_set(APR_T_NECP_BINDING_RESULT,0);transport_set(APR_T_NECP_BINDING_POLICY,0);transport_set(APR_T_NECP_BINDING_RESULT_INDEX,0);
         transport_set(APR_T_NECP_CONSTRAINTS_SEEN,constraints?constraints->seen:0);
+        transport_set(APR_T_NECP_CLIENT_FLAGS,constraints?constraints->request_flags:0);
         transport_set(APR_T_NECP_CONSTRAINTS_RESTRICTED,constraints?constraints->restricted:0);
         transport_set(APR_T_NECP_CONSTRAINTS_INERT,constraints?constraints->inert:0);
         transport_set(APR_T_NECP_CONSTRAINTS_UNSUPPORTED,constraints?constraints->unsupported:0);

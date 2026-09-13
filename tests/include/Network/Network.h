@@ -12,10 +12,16 @@ nw_endpoint_type_t nw_endpoint_get_type(nw_endpoint_t);
 const char *nw_endpoint_get_hostname(nw_endpoint_t);
 uint16_t nw_endpoint_get_port(nw_endpoint_t);
 const struct sockaddr *nw_endpoint_get_address(nw_endpoint_t);
+void nw_retain(void *);
 void nw_release(void *);
 #ifdef __BLOCKS__
 #include <dispatch/dispatch.h>
 typedef struct TestPath *nw_path_t;
+typedef struct TestMonitor *nw_path_monitor_t;
+nw_path_monitor_t nw_path_monitor_create(void);
+void nw_path_monitor_set_queue(nw_path_monitor_t,dispatch_queue_t);
+void nw_path_monitor_set_update_handler(nw_path_monitor_t,void (^)(nw_path_t));
+void nw_path_monitor_start(nw_path_monitor_t);
 typedef enum {nw_path_status_invalid,nw_path_status_satisfied,nw_path_status_unsatisfied,nw_path_status_satisfiable} nw_path_status_t;
 typedef enum {nw_path_unsatisfied_reason_not_available,nw_path_unsatisfied_reason_cellular_denied,nw_path_unsatisfied_reason_wifi_denied,nw_path_unsatisfied_reason_local_network_denied} nw_path_unsatisfied_reason_t;
 nw_path_t nw_connection_copy_current_path(nw_connection_t);
@@ -31,6 +37,7 @@ typedef enum {nw_connection_state_invalid,nw_connection_state_waiting,nw_connect
 typedef enum {nw_error_domain_invalid,nw_error_domain_posix,nw_error_domain_dns,nw_error_domain_tls} nw_error_domain_t;
 typedef void (^nw_connection_state_changed_handler_t)(nw_connection_state_t,nw_error_t);
 typedef void (^nw_connection_send_completion_t)(nw_error_t);
+typedef void (^nw_connection_receive_completion_t)(dispatch_data_t,nw_content_context_t,bool,nw_error_t);
 typedef void (^nw_establishment_report_access_block_t)(nw_establishment_report_t);
 nw_endpoint_t nw_connection_copy_endpoint(nw_connection_t);
 nw_error_domain_t nw_error_get_error_domain(nw_error_t);

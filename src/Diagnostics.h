@@ -6,9 +6,9 @@
 #include "DiagnosticFields.h"
 #include "Version.h"
 
-/* The field layout is unchanged; retain protocol 16 across this cleanup. */
-#define APR_DIAG_PROTOCOL "16"
-#define APR_DIAG_MAGIC (UINT64_C(0x41505240) << 32)
+/* Protocol 22: endpoint retirement requests and awaiting-native-result state. */
+#define APR_DIAG_PROTOCOL "22"
+#define APR_DIAG_MAGIC (UINT64_C(0x41505246) << 32)
 #define APR_DIAG_PREFIX "local.apnsroute.v" APR_DIAG_PROTOCOL
 #define APR_DIAG_UNBIND (UINT64_C(1) << 16)
 enum apr_stage { APR_ENTERED = 1, APR_WRONG_OS, APR_CONFIG_ERROR, APR_DISABLED,
@@ -63,9 +63,10 @@ enum apr_hook_bit {
     APR_H_NW = 1U << 0, APR_H_NECP = 1U << 1,
     APR_H_NW_START = 1U << 2, APR_H_NW_STATE = 1U << 3,
     APR_H_NW_SEND = 1U << 4, APR_H_NW_CANCEL = 1U << 5,
-    APR_H_NW_FORCE = 1U << 6
+    APR_H_NW_FORCE = 1U << 6, APR_H_NW_RECEIVE = 1U << 7,
+    APR_H_NW_RECEIVE_MESSAGE = 1U << 8
 };
-#define APR_HOOK_MASK 127U
+#define APR_HOOK_MASK 511U
 void apr_diag_init(uint64_t incarnation);
 void apr_diag_stage(enum apr_stage stage, int config_error, bool unbind);
 void apr_diag_hook(unsigned mask);
@@ -78,6 +79,10 @@ uint32_t apr_diag_nw_handler(void);
 void apr_diag_nw_state(uint32_t generation,unsigned state,unsigned domain,int error);
 void apr_diag_nw_report(unsigned detail);
 void apr_diag_nw_cancel_path(unsigned detail);
+void apr_diag_nw_cancel(unsigned action);
+void apr_diag_connection(unsigned slot,const uint32_t value[APR_CONNECTION_FIELD_COUNT]);
+void apr_diag_connection_overflow(void);
+void apr_diag_retirement(const APRRetirementStatus *status);
 uint32_t apr_diag_binding(uint32_t status,uint32_t index,int error,const APRConstraints *constraints);
 void apr_diag_binding_result(uint32_t generation,uint32_t flags,uint32_t policy,uint32_t index);
 #endif

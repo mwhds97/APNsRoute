@@ -288,6 +288,7 @@ static bool inspect(const uint8_t *buffer, size_t size, Inspection *result) {
         at += 5 + n;
     }
 
+    result->constraints.request_flags=flags; /* Doctor only; preserve all guards. */
     /* IP and transport protocol are separate; zero means unspecified.
        Do not change known non-TCP, listener, or inbound clients. */
     if ((have_protocol && protocol && protocol != 6) ||

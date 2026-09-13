@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check release contents, absence of runtime logging, and signature hashes."""
+"""Check release package contents, absence of runtime logging, and signature hashes."""
 import hashlib
 from pathlib import Path
 import plistlib
@@ -10,8 +10,9 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 expected_metadata = dict(line.split(': ', 1) for line in (root / 'control').read_text().splitlines() if ': ' in line)
 version = expected_metadata['Version']
-assert expected_metadata['Name'] == 'APNsRoute' and version == '1.1.0'
-subprocess.run(['dpkg', '--compare-versions', version, 'gt', '1.1.0~experimental17'], check=True)
+assert expected_metadata['Name'] == 'APNsRoute' and version == '1.2.0'
+subprocess.run(['dpkg', '--compare-versions', version, 'gt', '1.1.0'], check=True)
+subprocess.run(['dpkg', '--compare-versions', version, 'gt', '1.1.1~experimental6'], check=True)
 assert f'#define APR_VERSION "{version}"' in (root / 'src/Version.h').read_text()
 deb = root / 'packages' / f"{expected_metadata['Package']}_{version}_{expected_metadata['Architecture']}.deb"
 
@@ -56,17 +57,34 @@ def verify_slice(blob, filetype=6):
                 '_nw_establishment_report_get_proxy_configured',
                 '_nw_establishment_report_get_used_proxy',
                 '_nw_connection_copy_current_path',
-                '_nw_path_get_status', '_nw_path_uses_interface_type'} <= imports
+                '_nw_path_get_status', '_nw_path_uses_interface_type', '_dispatch_data_get_size'} <= imports
         assert b'nw_path_get_unsatisfied_reason' in blob
+        assert b'nw_connection_cancel_current_endpoint' in blob
         assert b'requiredAddressFamily' not in blob
         assert not any(name.startswith(('_objc_', '_CF', '_sel_')) for name in imports)
         assert not imports.intersection({'_nw_parameters_copy', '_nw_connection_copy_parameters', '_nw_establishment_report_copy_proxy_endpoint'})
-        # Observers never initiate cancellation or change a callback queue.
+        # Cancellation upgrades use the existing original trampoline. No new
+        # imported cancellation entrypoint or callback-queue mutation is added.
         assert not imports.intersection({'_nw_connection_cancel', '_nw_connection_force_cancel', '_nw_connection_set_queue'})
         assert not imports.intersection({'_CFReadStreamSetProperty', '_CFWriteStreamSetProperty',
             '_nw_parameters_require_interface', '_nw_parameters_clear_prohibited_interfaces',
             '_nw_parameters_set_prohibit_expensive', '_send', '_recv', '_connect', '_connectx'})
         assert b'setProxyConfiguration:' not in blob and b'setNoProxy:' not in blob
+        assert b'local.apnsroute.v22.' in blob
+        for required in (b'conn-0-id',b'conn-7-path',b'connection-overflow',b'necp-client-flags',
+                         b'nw_connection_receive',b'nw_connection_receive_message',
+                         b'conn-0-retire-requests',b'ret-status',b'ret-last-id',b'ret-skipped',b'ret-requests',b'ret-awaiting'):
+            assert required in blob, required
+        assert {'_nw_retain','_nw_path_monitor_create','_nw_path_monitor_start',
+                '_nw_path_monitor_set_queue','_nw_path_monitor_set_update_handler',
+                '_dispatch_queue_create','_dispatch_after_f','_dispatch_async_f'} <= imports
+        assert not imports.intersection({'_kill','_killpg','_dispatch_source_create',
+            '_nw_connection_restart','_nw_connection_cancel_current_endpoint',
+            '_nw_connection_receive','_nw_connection_receive_message','_nw_connection_send',
+            '_nw_connection_create','_nw_connection_start'})
+        for retired in (b'_apr_cellular_policy',b'_apr_handover',b'cellular-policy-masked',b'handover-pending'):
+            assert retired not in blob, retired
+        assert b'nw-cancel-immediate' in blob and b'nw-cancel-action' in blob
         assert b'necp-binding-result-index' in blob
         assert b'necp-constraints-first' in blob
         assert b'necp-agent-name-15' in blob
@@ -111,6 +129,7 @@ with tempfile.TemporaryDirectory(prefix='apnsroute-verify-') as temp:
     metadata = (stage / 'DEBIAN/control').read_text()
     assert 'Package: local.apnsroute\n' in metadata
     assert metadata == (root / 'control').read_text()
+    assert 'Experimental' not in metadata and 'experimental' not in version
     assert 'firmware (<< 15.0)' in metadata
     assert 'mobilesubstrate | com.ex.substitute' in metadata
     assert (stage / 'DEBIAN/conffiles').read_text() == '/Library/Application Support/APNsRoute/mode\n'
@@ -134,7 +153,14 @@ with tempfile.TemporaryDirectory(prefix='apnsroute-verify-') as temp:
     assert 'exec /usr/libexec/apnsroute-diag' in controller and 'APNsRoute.log' not in controller
     assert 'local.apnsroute.v1' not in controller
     assert version.encode() in helper.read_bytes()
-    assert 'experimental' not in metadata
+    assert 'Requests endpoint retirement for older matched connections' in metadata
+    assert b'Normal cancels upgraded to immediate teardown:' in helper.read_bytes()
+    assert b'local.apnsroute.v22.' in helper.read_bytes()
+    assert b'Handover retirement:' in helper.read_bytes()
+    assert b'Endpoint retirement requests=' in helper.read_bytes()
+    assert b'NW connection observations' in helper.read_bytes()
+    assert b'Original client flags:' in helper.read_bytes()
+    assert b'complete callbacks=' in helper.read_bytes()
     assert 'experimental' not in controller
     assert 'experimental' not in (stage / 'DEBIAN/postinst').read_text()
     assert 'APNsRoute doctor 1.' not in controller
@@ -144,4 +170,4 @@ with tempfile.TemporaryDirectory(prefix='apnsroute-verify-') as temp:
                                 capture_output=True, text=True)
         assert result.returncode == 2
 
-print('PASS: release metadata/configuration, apsd-only filter, doctor helper, rejected log command, no runtime logging imports, both signed dylib slices and signed helper page hashes')
+print('PASS: release upgrade metadata/configuration, apsd-only filter, doctor helper, rejected log command, no runtime logging imports, both signed dylib slices and signed helper page hashes')

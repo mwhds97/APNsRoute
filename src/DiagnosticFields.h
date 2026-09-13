@@ -1,6 +1,8 @@
 #ifndef APNSROUTE_DIAGNOSTIC_FIELDS_H
 #define APNSROUTE_DIAGNOSTIC_FIELDS_H
 #include <stddef.h>
+#include "ConnectionSchema.h"
+#include "RetirementStatus.h"
 /* Versioned fixed fields shared by apsd, doctor and the snapshot reader.
    Names and positions are defined once; removed experiments have no slots. */
 #define APR_DIAGNOSTIC_HEAD_FIELDS(X) \
@@ -21,6 +23,13 @@
     X(NW_REPORT, "nw-report") \
     X(NW_HANDLER_ID, "nw-handler-id") \
     X(NW_CANCEL_PATH, "nw-cancel-path") \
+    X(NW_CANCEL_NORMAL, "nw-cancel-normal") \
+    X(NW_CANCEL_IMMEDIATE, "nw-cancel-immediate") \
+    X(NW_CANCEL_APP_FORCE, "nw-cancel-app-force") \
+    X(NW_CANCEL_ACTION, "nw-cancel-action") \
+    X(CONNECTION_OVERFLOW, "connection-overflow") \
+    APR_CONNECTION_DIAGNOSTIC_FIELDS(X) \
+    APR_RETIREMENT_FIELDS(X) \
     X(NECP_BINDING_ID, "necp-binding-id") \
     X(NECP_BINDING_INDEX, "necp-binding-index") \
     X(NECP_BINDING_STATUS, "necp-binding-status") \
@@ -29,6 +38,7 @@
     X(NECP_BINDING_POLICY, "necp-binding-policy") \
     X(NECP_BINDING_RESULT_INDEX, "necp-binding-result-index") \
     X(NECP_CONSTRAINTS_SEEN, "necp-constraints-seen") \
+    X(NECP_CLIENT_FLAGS, "necp-client-flags") \
     X(NECP_CONSTRAINTS_RESTRICTED, "necp-constraints-restricted") \
     X(NECP_CONSTRAINTS_INERT, "necp-constraints-inert") \
     X(NECP_CONSTRAINTS_UNSUPPORTED, "necp-constraints-unsupported") \
@@ -70,6 +80,7 @@ enum { APR_DIAGNOSTIC_HEAD_FIELDS(APR_HEAD_ENUM) APR_TRANSPORT_FIRST_SLOT };
 enum { APR_TRANSPORT_FIELDS(APR_TRANSPORT_ENUM) APR_TRANSPORT_SLOTS };
 #undef APR_TRANSPORT_ENUM
 #define APR_DIAG_SLOTS (APR_TRANSPORT_FIRST_SLOT + APR_TRANSPORT_SLOTS)
+_Static_assert(APR_T_CONN_7_PATH - APR_T_CONN_0_ID + 1 == APR_CONNECTION_COUNT * APR_CONNECTION_FIELD_COUNT, "connection row layout");
 _Static_assert(APR_T_NECP_AGENT_NAME_15 - APR_T_NECP_AGENT_NAME_0 == 15, "agent word layout");
 _Static_assert(APR_T_NECP_PROHIBITED_TYPES_7 - APR_T_NECP_PROHIBITED_TYPES_0 == 7, "prohibition word layout");
 static inline const char *apr_diag_field_name(unsigned slot) {

@@ -2,7 +2,7 @@ ARCHS = arm64 arm64e
 TARGET = iphone:clang:14.5:14.0
 include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = APNsRoute
-APNsRoute_FILES = src/Tweak.c src/HookEngine.c src/Diagnostics.c src/NECPHooks.c src/NECPResults.c src/TunnelSelector.c src/InterfaceCheck.c src/NWHooks.c src/NWObserver.c
+APNsRoute_FILES = src/Tweak.c src/HookEngine.c src/Diagnostics.c src/Connections.c src/Retirement.c src/NECPHooks.c src/NECPResults.c src/TunnelSelector.c src/InterfaceCheck.c src/NWHooks.c src/NWObserver.c
 APNsRoute_CFLAGS = -std=c11 -Wall -Wextra -Werror -O2 -fvisibility=hidden -fblocks
 APNsRoute_FRAMEWORKS = Network
 APNsRoute_USE_SUBSTRATE = 0

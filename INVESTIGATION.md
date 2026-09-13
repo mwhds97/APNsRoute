@@ -1,4 +1,66 @@
-# Investigation — successful routing, cleanup and rule matching
+# Investigation — routing and handover cleanup
+
+## 1.2.0 release confirmation
+
+Experimental6's subsequent three snapshots retain apsd PID 10284 while the monitor advances cellular generation 1 → Wi-Fi generation 2 → cellular generation 3. The initial courier #2 becomes failed/cancelled after one current-endpoint request; Wi-Fi courier #5 is ready. On return, #5 is cancelled through the owner's path and fresh cellular courier #10 is ready. Total endpoint requests stay at one, awaiting/pending counts are zero and no tracking skips are recorded. The user reports that the sequence works without the earlier crash.
+
+Wi-Fi created another init and several failed secondary attempts (POSIX 50), so success does not mean all init traffic or unsuccessful attempts disappeared. No process restart is indicated in this sequence. These records and the user's observation support promoting the tested endpoint behavior, while not proving the exact assertion that caused experimental5 to abort or long-term behavior on other setups.
+
+Release 1.2.0 makes lifecycle naming/reference-transfer cleanup and updates build identity. Timing, rules, callback order, cancellation APIs, bounds and NECP bytes are preserved. VALIDATION.md separates the device evidence from host/source/build verification. The sections below record the earlier investigation chronologically, including uncertainties as understood at that time.
+
+## 1.1.1 experimental6: reproduced abort and lifecycle revision
+
+The user clarified that apsd was restarted only before the first cellular reading. The experimental5 readings therefore cannot be treated as one successful handover: PID 9314 on the first cellular sample becomes PID 9711 on Wi-Fi, and the monitor returns to generation 1 with zero retirement calls. A later cellular sample keeps PID 9711 and advances to generation 2, still with zero requests. Those counters do not reconstruct the terminated process's final action.
+
+The separate reproduced crash report supplies direct evidence:
+
+| Evidence | Value |
+| --- | --- |
+| Process / device | apsd PID 9902; iPhone12,8; iOS 14.8 (18H17) |
+| Launch to crash | About 80.8 seconds |
+| Exception | EXC_CRASH (SIGABRT) |
+| Crashed thread | 5, queue `com.apple.CFNetwork.Connection` |
+| Highest framework frame | CFNetwork image offset 0xb0474, below libc abort frames |
+| Loaded APNsRoute UUID | `00d6c619-2f86-32ae-932a-0423b05d4d85` |
+| Matching delivered slice | Exact LC_UUID match for experimental5 arm64e |
+| Missing evidence | Assertion text and symbolicated private CFNetwork function; no APNsRoute frame on the crashing stack |
+
+This establishes an abort, not an ordinary handover restart. The module contains no automatic process signal. The asynchronous stack does not prove which earlier operation triggered CFNetwork's abort. The new unsolicited full NW force-cancel introduced in experimental5 is the leading suspect: the higher-level CFNetwork owner may not permit a terminal cancelled state before it has initiated its own teardown. This is a lifecycle hypothesis, not a known assertion string or a proven use-after-free.
+
+Experimental6 changes that operation to public `nw_connection_cancel_current_endpoint`. The local iPhoneOS14.5 SDK contract describes trying another endpoint or failing if none remains. It is primarily useful for protocols without reliable handshakes, such as UDP; established TCP behavior still needs verification. The original CFNetwork callbacks are forwarded unchanged, without synthetic failure/EOF, private stream hooks, queue replacement, assertion bypass or NECP result masking. A missing API leaves automatic retirement unavailable; there is no terminal-cancel fallback.
+
+A bounded entry remains owned and awaiting until a native ready/terminal event or owner cleanup is observed. It cannot receive another retirement request while awaiting, even through additional network changes. Native READY rearms the same NW object for a later handover; an unchanged scalar object ID is not a TCP-connection identity. If the API does not produce a usable TCP outcome, doctor exposes that pending native response instead of escalating. Existing owner-requested normal cancellations retain experimental1's force-cancel dispatch.
+
+Validation must keep the same apsd PID through cellular → Wi-Fi → cellular, confirm old TCP/Surge entries close and fresh transports deliver notifications, and check request/awaiting counters. Host tests exercise dispatch, references and callback forwarding; they cannot reproduce the private CFNetwork assertion or establish its resolution. Experimental5 is withdrawn as a working fix. Experimental4 and experimental1 installers are retained unchanged as rollback options, with their known retained-connection behavior.
+
+## 1.1.1 experimental5: historical attempt, withdrawn after abort
+
+The experimental4 samples share apsd PID 9008 and show the following observations. These are local NW record IDs, not verified Surge row IDs or NECP client IDs.
+
+| Stage | Cellular courier #2 | Wi-Fi courier #4 |
+| --- | --- | --- |
+| Cellular before | Ready; receive callbacks=2, bytes=38; no cancel | Not yet observed |
+| Wi-Fi | Same last ready/read values; no cancel | Ready; receive callbacks=2, bytes=38; no cancel |
+| Cellular after | Same last ready/read values; no cancel | Cancelled; receive callbacks=4, bytes=38; one normal cancel; receive error=89 (ECANCELED on iOS 14) |
+
+The user then confirmed notification arrival, while explicitly rejecting reuse of previous connections. This supports a lifetime-policy change rather than treating every open row as a failed network flow. The snapshots do not themselves prove which connection carried the later notification.
+
+Experimental5 keeps experimental4's routing/NECP behavior and initiates cancellation of older established, rule-matched NW objects after observed Wi-Fi/cellular transitions. The first monitor observation establishes a baseline. Later transitions use a three-second window, allowing earlier cancellation if a fresh matched connection receives data on the new network. Tracking generation follows first readiness and observed monitor callbacks; it is not a service-specific replacement map. Native callback delivery and object lifetime are retained, and apsd is never restarted by this module. Unknown paths, missing handlers and tracking limits are exposed by doctor.
+
+The local iPhoneOS14.5 SDK documents that `nw_connection_restart` retries a waiting connection and ignores a ready connection, while `nw_connection_force_cancel` terminates a connection without graceful negotiation. That motivated the historical experiment but did not establish whether CFNetwork accepts an unsolicited terminal cancellation. The later abort invalidates treating that experiment as a successful handover fix. Host tests can validate references, callback forwarding and scheduling, but only the phone can establish Surge closure and notification recovery. A short reconnect delay and ordinary apsd init requests remain possible. No release promotion is made.
+
+Experimental2's automatic apsd restart stays removed. Experimental3's caller-visible NECP viability masking also stays removed: it failed to close the original clients and was followed by failed recovery in the user's earlier test. The unchanged experimental4 and experimental1 installers are retained as rollback options.
+
+## 1.1.1 experimental1: open entries after Wi-Fi handover
+
+The new report says connections captured on cellular remain marked open in Surge after switching to Wi-Fi. No doctor snapshot or packet trace for that transition accompanied this report. It does not establish whether those connections remain active in apsd, are stuck negotiating teardown, or are retained in Surge's connection display/upstream state.
+
+Source inspection confirms release 1.1.0 only observes the public cancellation path; it always calls the original normal-cancel trampoline. The local iPhoneOS14.5 SDK Network/connection.h declarations distinguish negotiated asynchronous `nw_connection_cancel` from `nw_connection_force_cancel`, which requests immediate non-graceful teardown (TCP RST). Both are public iOS 12 APIs. Reference: [Apple force-cancel API](https://developer.apple.com/documentation/network/nw_connection_force_cancel(_:)). This API distinction supports a teardown hypothesis, not a confirmed root cause for the user's session.
+
+The smallest testable change is to upgrade a cancellation that apsd already requests for a matching connection. This avoids taking over apsd's decision about when a healthy connection should reconnect. Protocol v17 records normal calls, substituted dispatches and apsd force calls so paired doctor readings can establish whether the hook is reached during the transition. Without observed cancellation, a separate investigation of the preserved utun path and apsd's lifecycle decision is needed; this build deliberately does not guess that an open entry is stale.
+
+The existing NECP binding and exact Cellular/Internet preference change are not modified. The working release is retained as the baseline, and the new package is experimental pending device validation.
+
 
 ## 1.1.0 release promotion
 

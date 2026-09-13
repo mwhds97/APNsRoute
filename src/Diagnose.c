@@ -163,6 +163,7 @@ static void report_binding(const uint32_t *v) {
     unsigned status=v[APR_T_NECP_BINDING_STATUS]&255;
     printf("Latest matched NECP request #%" PRIu32 ": %s\n",v[APR_T_NECP_BINDING_ID],
         status<sizeof(names)/sizeof(*names)?names[status]:"unknown status");
+    printf("  Original client flags: 0x%08" PRIx32 " (guards unchanged)\n",v[APR_T_NECP_CLIENT_FLAGS]);
     report_constraints(v);
     if(v[APR_T_NECP_BINDING_INDEX]) {
         char name[IF_NAMESIZE]={0};const char *current=if_indextoname(v[APR_T_NECP_BINDING_INDEX],name);
@@ -184,11 +185,80 @@ static void report_binding(const uint32_t *v) {
     puts("  This pair identifies one NECP client/its flows; it is not paired with the NW handler below.");
     puts("  An accepted request or matching interface does not confirm Surge capture or push delivery.");
 }
+static void report_retirement(const uint32_t *v) {
+    static const char *states[]={"not initialized", "disabled; native lifetime",
+        "waiting for first Wi-Fi/cellular path", "suspended; physical path unknown or unsatisfied",
+        "watching; no older established connections", "handover window; older connections pending",
+        "unavailable; native lifetime", "endpoint request awaiting native readiness or closure"};
+    static const char *reasons[]={"none", "fresh matched connection received data on current network",
+        "three-second handover window elapsed"};
+    unsigned status=v[APR_T_RET_STATUS],reason=v[APR_T_RET_REASON],network=v[APR_T_RET_NETWORK];
+    printf("Handover retirement: %s\n",status<sizeof(states)/sizeof(*states)?states[status]:"unknown status");
+    printf("  Monitor network: %s; generation=%" PRIu32 "\n",
+        network==APR_RET_WIFI?"Wi-Fi":network==APR_RET_CELLULAR?"cellular":"unknown",v[APR_T_RET_EPOCH]);
+    printf("  Held connections=%" PRIu32 "/8; older established connections pending=%" PRIu32 "\n",
+        v[APR_T_RET_HELD],v[APR_T_RET_PENDING]);
+    printf("  Endpoint retirement requests=%" PRIu32 "; last connection=#%" PRIu32 "\n",
+        v[APR_T_RET_REQUESTS],v[APR_T_RET_LAST_ID]);
+    printf("  Awaiting native readiness/closure=%" PRIu32 "\n",v[APR_T_RET_AWAITING]);
+    printf("  Last retirement reason: %s\n",reason<sizeof(reasons)/sizeof(*reasons)?reasons[reason]:"unknown");
+    printf("  Tracking attempts skipped (capacity/ID/handler unavailable): %" PRIu32 "\n",v[APR_T_RET_SKIPPED]);
+    if(v[APR_T_RET_ERROR])printf("  Retirement error: %" PRId32 " (%s)\n",
+        (int32_t)v[APR_T_RET_ERROR],strerror((int32_t)v[APR_T_RET_ERROR]));
+    puts("  Requests cancel the current endpoint; counts do not confirm transport closure or push delivery.");
+    puts("  No handover restart of apsd. Native endpoint fallback/failure handles recovery; new init traffic is possible.");
+}
+static void report_connections(const uint32_t *v) {
+    static const char *roles[]={"unknown","init hint","courier hint","matched host","matched address"};
+    static const char *states[]={"invalid","waiting","preparing","ready","failed","cancelled"};
+    static const char *paths[]={"invalid","satisfied","unsatisfied","satisfiable"};
+    puts("NW connection observations (up to 8; IDs are local to this apsd process):");
+    bool any=false;
+    for(unsigned slot=0;slot<APR_CONNECTION_COUNT;++slot) {
+        const uint32_t *r=v+APR_T_CONN_0_ID+slot*APR_CONNECTION_FIELD_COUNT;
+        if(!r[APR_R_ID]) continue;
+        any=true;unsigned state=r[APR_R_STATE]&255U,role=r[APR_R_ROLE];
+        unsigned history=r[APR_R_STATE]>>APR_ROW_HISTORY_SHIFT;
+        const char *name=r[APR_R_STATE]&APR_ROW_HANDLER_CLEARED?"handler cleared":
+            !history?"no state callback":state<6?states[state]:"unknown state";
+        printf("  Connection #%" PRIu32 " (%s), handler #%" PRIu32 ": %s\n",
+            r[APR_R_ID],role<5?roles[role]:"unknown",r[APR_R_HANDLER],name);
+        printf("    Send calls=%" PRIu32 "; receive calls=%" PRIu32 "; receive callbacks=%" PRIu32 "\n",
+            r[APR_R_SENDS],r[APR_R_READS],r[APR_R_RECEIVED]);
+        printf("    Received bytes=%" PRIu32 "; complete callbacks=%" PRIu32 "; cancels: normal=%u force=%u\n",
+            r[APR_R_BYTES],r[APR_R_COMPLETES],r[APR_R_CANCELS]&65535U,r[APR_R_CANCELS]>>16);
+        printf("    Endpoint retirement requests=%" PRIu32 "\n",r[APR_R_RETIRE_REQUESTS]);
+        printf("    Handler states seen: ready=%s waiting=%s failed=%s cancelled=%s\n",
+            history&(1U<<3)?"yes":"no",history&(1U<<1)?"yes":"no",
+            history&(1U<<4)?"yes":"no",history&(1U<<5)?"yes":"no");
+        unsigned domain=r[APR_R_ERROR_INFO]&255U,source=r[APR_R_ERROR_INFO]>>8;
+        if(domain) printf("    Last error: %s (%u), code=%" PRId32 "; from %s callback\n",
+            domain==1?"POSIX":domain==2?"DNS":domain==3?"TLS":"unknown",domain,(int32_t)r[APR_R_ERROR_CODE],
+            source==APR_ERROR_RECEIVE?"receive":"state");
+        else puts("    Last error: none observed");
+        unsigned path=r[APR_R_PATH];
+        if(!(path&APR_PATH_SEEN)) puts("    Path at last receive/cancel call: not sampled");
+        else if(!(path&APR_PATH_PRESENT)) puts("    Path at last receive/cancel call: unavailable");
+        else printf("    Path at last receive/cancel call: %s; Wi-Fi=%s cellular=%s loopback=%s\n",
+            (path&255U)<4?paths[path&255U]:"unknown",path&APR_PATH_WIFI?"yes":"no",
+            path&APR_PATH_CELL?"yes":"no",path&APR_PATH_LOOP?"yes":"no");
+    }
+    if(!any) puts("  No matched connection recorded");
+    printf("  Record attempts skipped (capacity/ID exhaustion): %" PRIu32 "\n",v[APR_T_CONNECTION_OVERFLOW]);
+    puts("  Rows contain last observations, not a live-connection list or Surge row mapping.");
+    puts("  A connection ID identifies an NW object, which can survive endpoint replacement.");
+    puts("  Counters saturate. Complete callbacks need not mean TCP EOF; bytes do not prove push delivery.");
+    puts("  Empty slots are used first; terminal/cleared slots may be reused. These diagnostic rows own no references.");
+    puts("  Enabled handover retirement separately holds at most eight connection references, reported above.");
+    puts("  Hostname hints label diagnostics only; all 13 routing rules remain active.");
+}
 static void report_transport(pid_t pid,uint64_t incarnation,bool enabled) {
     struct transport_context context={pid,incarnation};uint32_t v[APR_TRANSPORT_SLOTS]={0};
     if(!apr_transport_snapshot(transport_read,&context,v)) {
         puts("Matched transport snapshot: unavailable or changing; rerun doctor");return;
     }
+    report_retirement(v);
+    report_connections(v);
     report_binding(v);
     puts("NW transport samples (independent of the NECP request above):");
     if(v[APR_T_NW_CREATED]&APR_CREATE_SEEN) {
@@ -224,8 +294,17 @@ static void report_transport(pid_t pid,uint64_t incarnation,bool enabled) {
             v[APR_T_NW_REPORT]&APR_REPORT_CONFIGURED?"yes":"no",v[APR_T_NW_REPORT]&APR_REPORT_USED?"yes":"no");
     }
     report_cancel_path(v[APR_T_NW_CANCEL_PATH]);
+    printf("  Matched cancellation calls since apsd start: normal=%" PRIu32 "; apsd force=%" PRIu32 "\n",
+        v[APR_T_NW_CANCEL_NORMAL],v[APR_T_NW_CANCEL_APP_FORCE]);
+    printf("  Normal cancels upgraded to immediate teardown: %" PRIu32 "\n",v[APR_T_NW_CANCEL_IMMEDIATE]);
+    static const char *actions[]={"none observed", "native cancellation (tweak disabled)",
+        "immediate teardown requested by APNsRoute", "native cancellation (force-cancel trampoline unavailable)",
+        "apsd requested force-cancel; forwarded unchanged"};
+    unsigned action=v[APR_T_NW_CANCEL_ACTION];
+    printf("  Last matched cancellation dispatch: %s\n",action<sizeof(actions)/sizeof(*actions)?actions[action]:"unknown");
+    puts("  Counts are API calls across matching connections, not unique connections or confirmed Surge closures.");
     puts("  State belongs to the latest registered handler, which may later be replaced/cleared.");
-    puts("  Reports are send-triggered, at most once per 5 s; no timers or extra APNs traffic.");
+    puts("  Establishment reports are send-triggered, at most once per 5 s; no report timer or extra APNs traffic.");
 
 }
 static int report_pid(pid_t pid) {
@@ -259,9 +338,9 @@ static int report_pid(pid_t pid) {
     } else puts("Loaded version: unavailable");
     printf("Stage: %s\n",stage_name(status & 255));
     bool enabled=(status & APR_DIAG_UNBIND)!=0;
-    printf("Loaded setting: %s\n",enabled ? "enabled (NECP tunnel binding)" : "disabled (native routing)");
+    printf("Loaded setting: %s\n",enabled ? "enabled (NECP tunnel binding; matched endpoint retirement)" : "disabled (native routing and lifetime)");
     if((status&255)==APR_NATIVE_READY)
-        puts("Native control: seven read-only observers requested; no APNsRoute routing changes or network probes.");
+        puts("Native control: nine observers requested; original input/results and cancellation forwarded.");
     report_transport(pid,incarnation,enabled);
 
     unsigned config_error=(status>>8)&255;
@@ -278,7 +357,8 @@ static int report_pid(pid_t pid) {
     unsigned hooks=(status>>17)&APR_HOOK_MASK;
     const char *hook_names[]={"nw_connection_create", "necp_client_action",
         "nw_connection_start", "nw_connection_set_state_changed_handler", "nw_connection_send",
-        "nw_connection_cancel", "nw_connection_force_cancel"};
+        "nw_connection_cancel", "nw_connection_force_cancel",
+        "nw_connection_receive", "nw_connection_receive_message"};
     puts("Hook trampolines:");
     for(unsigned i=0;i<sizeof(hook_names)/sizeof(*hook_names);++i)
         printf("  %s: %s\n",hook_names[i],hooks&(1U<<i)?"present":"absent");

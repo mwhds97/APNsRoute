@@ -1,6 +1,6 @@
-APNsRoute 1.1.0 release build report
+APNsRoute 1.2.0 build report
 Target: rootful iOS 14.x; intended device includes iPhone SE (2020), A13.
-Release promotion of the user-approved experimental17 source. Routing, the 13 rules and doctor protocol 16 are retained. Installation enables the saved mode and requests one apsd restart. The release installer is verified with staged scripts; no remote phone installation is performed here.
+Release 1.2.0 promotes the user-confirmed experimental6 behavior with lifecycle readability/ownership cleanup and a distinct release build ID. All 13 rules, endpoint retirement, native callbacks and kernel results, automatic installation enablement and doctor protocol 22 remain. The device test kept apsd PID 10284 through cellular/Wi-Fi/cellular with fresh ready couriers and no reported crash. No automatic apsd handover restart, runtime logging or probes. Installation requests one apsd reload. Normal recovery can still create init traffic.
 
 clang version 13.0.0 (https://github.com/apple/llvm-project.git f765bf5b71fd3637a6f6d1d3e6ab95ca91892a0c)
 Target: x86_64-unknown-linux-gnu
@@ -15,10 +15,19 @@ This C-only dylib has no Obj-C or CFString metadata. That reduces ABI conversion
 but does NOT prove that this binary loads on the target jailbreak.
 This build uses the same legacy ABI family as 0.1.2, but a different clang 13 revision; device validation is required.
 A native Xcode/Theos build is the alternative if legacy ABI loading fails.
-arm64e: known legacy ABI linker warnings: 9
+arm64e: known legacy ABI linker warnings: 11
 Doctor: standalone arm64, no added entitlements, read-only socket inspection.
 Fat dylib assembled with arm64 and arm64e slices; ad-hoc signed with ldid.
 File/unified logging absent. Doctor uses fixed-size Darwin notification state, not log files.
-Dylib SHA-256: e776ab10be475a719e6533987512ca6b3e6f583d3ef36e4092785ae8540ed300
-Package SHA-256: 2fb72c1ca686e677d4ca59c5c25f3beb9fd0e8769a981e382ca82181215db4d4
+Dylib SHA-256: 6ceca04af0c0e9ec15b6dfd85554f2de1ab5c6fb15a2ca97a30bb6bdc7957591
+Package SHA-256: 31633c7bf96312613aa52f53486db6a56e60166c32a885546af89e1e459fef11
 On configure, the package saves enabled mode and requests one apsd restart. The legacy conffile payload is retained to avoid a content-change prompt; postinst performs activation on fresh install, reinstall and upgrade.
+
+Release 1.2.0 validation:
+- Full host regression suite: PASS.
+- Refactored endpoint lifecycle and actual NW observer Blocks: ASan/UBSan PASS; leak detection disabled.
+- Package metadata, upgrade ordering, staged activation, imports and ad-hoc signature page hashes: PASS.
+- Production source edits limited to Retirement.c, NWObserver.c, Tweak.c comments and Version.h. All settings, activation scripts and diagnostic schemas remain byte-identical to experimental6.
+- Ten runtime C units match optimized IR on arm64 and arm64e after expected build-identity/private-name normalization. Refactored Retirement.c differs; source review and lifecycle tests cover it. Full IR identity is not claimed; see PRESERVATION-REPORT.txt.
+- Working experimental6 rollback SHA-256: 2da471b67072646cb5d59115aeac412a0e936ad6ec24e9319d289241021f455d.
+- Device evidence: user-confirmed experimental6 cellular/Wi-Fi/cellular sequence, PID 10284 throughout, fresh ready couriers and no reported crash. Release binary not run remotely on phone.

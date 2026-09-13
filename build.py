@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the rootful release package with an existing iOS toolchain.
+"""Build the rootful APNsRoute package with an existing iOS toolchain.
 
 Dependencies: Python 3, iOS clang/ld/lipo/ldid, an iPhoneOS SDK, dpkg-deb.
 No downloads or device writes are performed by this script.
@@ -54,9 +54,9 @@ def tool(name):
     return str(path)
 
 report = [
-    f'APNsRoute {version} release build report',
+    f'APNsRoute {version} build report',
     'Target: rootful iOS 14.x; intended device includes iPhone SE (2020), A13.',
-    'Release promotion of the user-approved experimental17 source. Routing, the 13 rules and doctor protocol 16 are retained. Installation enables the saved mode and requests one apsd restart. The release installer is verified with staged scripts; no remote phone installation is performed here.',
+    'Release 1.2.0 promotes the user-confirmed experimental6 behavior with lifecycle readability/ownership cleanup and a distinct release build ID. All 13 rules, endpoint retirement, native callbacks and kernel results, automatic installation enablement and doctor protocol 22 remain. The device test kept apsd PID 10284 through cellular/Wi-Fi/cellular with fresh ready couriers and no reported crash. No automatic apsd handover restart, runtime logging or probes. Installation requests one apsd reload. Normal recovery can still create init traffic.',
     '',
 ]
 

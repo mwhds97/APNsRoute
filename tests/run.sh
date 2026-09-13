@@ -14,7 +14,7 @@ for scenario in global local unloaded framework missing-symbol all-missing; do
 done
 
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O2 -Itests/include tests/test_init.c -o "$test_output/test_init"
-for mode in disabled observe unbind invalid missing-config wrong-os missing-engine; do
+for mode in disabled observe unbind invalid missing-config wrong-os missing-engine missing-endpoint; do
     "$test_output/test_init" "$mode"
 done
 
@@ -27,6 +27,8 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O2 tests/test_necp_results.c -pthread 
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -O2 -Itests/include tests/test_diagnostics.c src/Diagnostics.c -pthread -o "$test_output/test_diagnostics"
 "$test_output/test_diagnostics"
 "$test_output/test_diagnostics" denied
+${CC:-cc} -std=c11 -Wall -Wextra -Werror -O2 tests/test_connections.c -pthread -o "$test_output/test_connections"
+"$test_output/test_connections"
 python3 tests/test_doctor_output.py
 python3 tests/test_activation.py
 
@@ -41,6 +43,13 @@ ${CC:-cc} -std=c11 -O2 -Itests/vendor/BlocksRuntime -c tests/vendor/BlocksRuntim
 ${CC:-cc} -std=c11 -O2 -Itests/vendor/BlocksRuntime -c tests/vendor/BlocksRuntime/data.c -o "$test_output/blocks-data.o"
 "${BLOCKS_CC:-clang}" -target x86_64-linux-gnu --ld-path=/usr/bin/ld \
     -std=c11 -Wall -Wextra -Werror -O2 -fblocks -Itests/include -Itests/vendor/BlocksRuntime \
-    tests/test_nw_observer.c "$test_output/blocks-runtime.o" "$test_output/blocks-data.o" \
+    tests/test_nw_observer.c src/Connections.c "$test_output/blocks-runtime.o" "$test_output/blocks-data.o" \
     -pthread -o "$test_output/test_nw_observer"
 "$test_output/test_nw_observer"
+"${BLOCKS_CC:-clang}" -target x86_64-linux-gnu --ld-path=/usr/bin/ld \
+    -std=c11 -Wall -Wextra -Werror -O2 -fblocks -Itests/include -Itests/vendor/BlocksRuntime \
+    tests/test_retirement.c "$test_output/blocks-runtime.o" "$test_output/blocks-data.o" \
+    -pthread -o "$test_output/test_retirement"
+for scenario in main disabled missing queue-failure monitor-failure; do
+    "$test_output/test_retirement" "$scenario"
+done
