@@ -243,12 +243,11 @@ void apr_nw_send(nw_connection_t connection,dispatch_data_t content,nw_content_c
 /* Observe the caller's receives without requesting any additional I/O. Block
    arguments, queue, completion count and errno are preserved. Content is never
    inspected: dispatch_data_get_size supplies an aggregate byte count only. */
-static bool received(uint32_t id,dispatch_data_t content,bool complete,nw_error_t error) {
+static void received(uint32_t id,dispatch_data_t content,bool complete,nw_error_t error) {
     size_t bytes=content?dispatch_data_get_size(content):0;
     unsigned domain=error?(unsigned)nw_error_get_error_domain(error):0;
     int code=error?nw_error_get_error_code(error):0;
     apr_connection_received(id,bytes,complete,domain,code);
-    return bytes && !error;
 }
 void apr_nw_receive(nw_connection_t connection,uint32_t minimum,uint32_t maximum,
                     nw_connection_receive_completion_t completion) {
@@ -260,9 +259,8 @@ void apr_nw_receive(nw_connection_t connection,uint32_t minimum,uint32_t maximum
     if(!id || !completion) {apr_original_nw_receive(connection,minimum,maximum,completion);return;}
     apr_original_nw_receive(connection,minimum,maximum,
         ^(dispatch_data_t content,nw_content_context_t context,bool complete,nw_error_t error) {
-            int incoming=errno;bool data=received(id,content,complete,error);errno=incoming;
+            int incoming=errno;received(id,content,complete,error);errno=incoming;
             completion(content,context,complete,error);
-            int outgoing=errno;if(data) apr_retirement_received(id);errno=outgoing;
         });
 }
 void apr_nw_receive_message(nw_connection_t connection,nw_connection_receive_completion_t completion) {
@@ -274,8 +272,7 @@ void apr_nw_receive_message(nw_connection_t connection,nw_connection_receive_com
     if(!id || !completion) {apr_original_nw_receive_message(connection,completion);return;}
     apr_original_nw_receive_message(connection,
         ^(dispatch_data_t content,nw_content_context_t context,bool complete,nw_error_t error) {
-            int incoming=errno;bool data=received(id,content,complete,error);errno=incoming;
+            int incoming=errno;received(id,content,complete,error);errno=incoming;
             completion(content,context,complete,error);
-            int outgoing=errno;if(data) apr_retirement_received(id);errno=outgoing;
         });
 }

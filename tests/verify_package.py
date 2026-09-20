@@ -10,9 +10,9 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 expected_metadata = dict(line.split(': ', 1) for line in (root / 'control').read_text().splitlines() if ': ' in line)
 version = expected_metadata['Version']
-assert expected_metadata['Name'] == 'APNsRoute' and version == '1.2.0'
-subprocess.run(['dpkg', '--compare-versions', version, 'gt', '1.1.0'], check=True)
-subprocess.run(['dpkg', '--compare-versions', version, 'gt', '1.1.1~experimental6'], check=True)
+assert expected_metadata['Name'] == 'APNsRoute' and version == '1.2.1'
+for predecessor in ('1.2.0', '1.2.1~experimental1', '1.2.1~experimental2'):
+    subprocess.run(['dpkg', '--compare-versions', version, 'gt', predecessor], check=True)
 assert f'#define APR_VERSION "{version}"' in (root / 'src/Version.h').read_text()
 deb = root / 'packages' / f"{expected_metadata['Package']}_{version}_{expected_metadata['Architecture']}.deb"
 
@@ -70,14 +70,14 @@ def verify_slice(blob, filetype=6):
             '_nw_parameters_require_interface', '_nw_parameters_clear_prohibited_interfaces',
             '_nw_parameters_set_prohibit_expensive', '_send', '_recv', '_connect', '_connectx'})
         assert b'setProxyConfiguration:' not in blob and b'setNoProxy:' not in blob
-        assert b'local.apnsroute.v22.' in blob
+        assert b'local.apnsroute.v24.' in blob
         for required in (b'conn-0-id',b'conn-7-path',b'connection-overflow',b'necp-client-flags',
                          b'nw_connection_receive',b'nw_connection_receive_message',
-                         b'conn-0-retire-requests',b'ret-status',b'ret-last-id',b'ret-skipped',b'ret-requests',b'ret-awaiting'):
+                         b'conn-0-retire-requests',b'ret-status',b'ret-last-id',b'ret-skipped',b'ret-requests',b'ret-awaiting',b'vpn-state',b'vpn-epoch',b'vpn-pending',b'vpn-requests',b'vpn-notify-error',b'quiet-state',b'quiet-events',b'ret-batches'):
             assert required in blob, required
         assert {'_nw_retain','_nw_path_monitor_create','_nw_path_monitor_start',
                 '_nw_path_monitor_set_queue','_nw_path_monitor_set_update_handler',
-                '_dispatch_queue_create','_dispatch_after_f','_dispatch_async_f'} <= imports
+                '_dispatch_queue_create','_dispatch_after_f','_dispatch_async_f','_notify_register_dispatch'} <= imports
         assert not imports.intersection({'_kill','_killpg','_dispatch_source_create',
             '_nw_connection_restart','_nw_connection_cancel_current_endpoint',
             '_nw_connection_receive','_nw_connection_receive_message','_nw_connection_send',
@@ -129,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix='apnsroute-verify-') as temp:
     metadata = (stage / 'DEBIAN/control').read_text()
     assert 'Package: local.apnsroute\n' in metadata
     assert metadata == (root / 'control').read_text()
-    assert 'Experimental' not in metadata and 'experimental' not in version
+    assert 'Name: APNsRoute\n' in metadata and '~experimental' not in version
     assert 'firmware (<< 15.0)' in metadata
     assert 'mobilesubstrate | com.ex.substitute' in metadata
     assert (stage / 'DEBIAN/conffiles').read_text() == '/Library/Application Support/APNsRoute/mode\n'
@@ -153,10 +153,13 @@ with tempfile.TemporaryDirectory(prefix='apnsroute-verify-') as temp:
     assert 'exec /usr/libexec/apnsroute-diag' in controller and 'APNsRoute.log' not in controller
     assert 'local.apnsroute.v1' not in controller
     assert version.encode() in helper.read_bytes()
-    assert 'Requests endpoint retirement for older matched connections' in metadata
+    assert 'Requests endpoint retirement for matched connections' in metadata
     assert b'Normal cancels upgraded to immediate teardown:' in helper.read_bytes()
-    assert b'local.apnsroute.v22.' in helper.read_bytes()
-    assert b'Handover retirement:' in helper.read_bytes()
+    assert b'local.apnsroute.v24.' in helper.read_bytes()
+    assert b'Connection retirement:' in helper.read_bytes()
+    assert b'VPN transition monitoring:' in helper.read_bytes()
+    assert b'Shared quiet period:' in helper.read_bytes()
+    assert b'_apr_retirement_received' not in data
     assert b'Endpoint retirement requests=' in helper.read_bytes()
     assert b'NW connection observations' in helper.read_bytes()
     assert b'Original client flags:' in helper.read_bytes()

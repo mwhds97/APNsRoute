@@ -87,7 +87,11 @@ int main(int argc, char **argv) {
         [APR_R_HANDLER]=5,[APR_R_BYTES]=123};
     apr_diag_connection(0,row);apr_diag_connection_overflow();
     apr_diag_connection(99,row);apr_diag_connection(0,NULL);
-    APRRetirementStatus retirement={APR_RET_SETTLING,APR_RET_WIFI,3,4,2,7,9,APR_RET_NEW_DATA,0,1,1};
+    APRRetirementStatus retirement={.status=APR_RET_SETTLING,.network=APR_RET_WIFI,.epoch=3,
+        .held=4,.pending=2,.requests=7,.last_id=9,.reason=APR_RET_QUIET,.skipped=1,.awaiting=1,
+        .vpn_state=APR_VPN_ON,.vpn_index=8,.vpn_epoch=4,.vpn_pending=2,.vpn_requests=5,
+        .vpn_reason=APR_RET_VPN_REPLACED,.vpn_notify=2,.vpn_notify_error=9,.vpn_error=EACCES,.quiet_state=APR_QUIET_WAITING,.quiet_epoch=5,.quiet_events=3,
+        .quiet_causes=APR_QUIET_PHYSICAL|APR_QUIET_VPN_ON|APR_QUIET_VPN_OFF,.quiet_remaining_ms=1200,.batches=2};
     apr_diag_retirement(&retirement);apr_diag_retirement(NULL);
     if (!denied) {
         uint32_t snapshot[APR_TRANSPORT_SLOTS];
@@ -96,13 +100,20 @@ int main(int argc, char **argv) {
         assert(snapshot[APR_T_RET_EPOCH]==3 && snapshot[APR_T_RET_HELD]==4 && snapshot[APR_T_RET_PENDING]==2);
         assert(snapshot[APR_T_RET_REQUESTS]==7 && snapshot[APR_T_RET_LAST_ID]==9);
         assert(snapshot[APR_T_RET_AWAITING]==1);
-        assert(snapshot[APR_T_RET_REASON]==APR_RET_NEW_DATA && !snapshot[APR_T_RET_ERROR] && snapshot[APR_T_RET_SKIPPED]==1);
+        assert(snapshot[APR_T_QUIET_STATE]==APR_QUIET_WAITING && snapshot[APR_T_QUIET_EPOCH]==5);
+        assert(snapshot[APR_T_QUIET_EVENTS]==3 && snapshot[APR_T_QUIET_CAUSES]==7);
+        assert(snapshot[APR_T_QUIET_REMAINING_MS]==1200 && snapshot[APR_T_RET_BATCHES]==2);
+        assert(snapshot[APR_T_VPN_STATE]==APR_VPN_ON && snapshot[APR_T_VPN_INDEX]==8);
+        assert(snapshot[APR_T_VPN_EPOCH]==4 && snapshot[APR_T_VPN_PENDING]==2 && snapshot[APR_T_VPN_REQUESTS]==5);
+        assert(snapshot[APR_T_VPN_REASON]==APR_RET_VPN_REPLACED && snapshot[APR_T_VPN_NOTIFY]==2);
+        assert(snapshot[APR_T_VPN_NOTIFY_ERROR]==9 && snapshot[APR_T_VPN_ERROR]==EACCES);
+        assert(snapshot[APR_T_RET_REASON]==APR_RET_QUIET && !snapshot[APR_T_RET_ERROR] && snapshot[APR_T_RET_SKIPPED]==1);
         fail_slot=APR_TRANSPORT_FIRST_SLOT+APR_T_RET_REASON;
-        retirement.reason=APR_RET_DEADLINE;retirement.requests=8;apr_diag_retirement(&retirement);
+        retirement.reason=APR_RET_VPN_OFF;retirement.requests=8;apr_diag_retirement(&retirement);
         assert(!apr_transport_snapshot(snapshot_read,NULL,snapshot));
         fail_slot=-1;apr_diag_retirement(&retirement);
         assert(apr_transport_snapshot(snapshot_read,NULL,snapshot));
-        assert(snapshot[APR_T_RET_REASON]==APR_RET_DEADLINE && snapshot[APR_T_RET_REQUESTS]==8);
+        assert(snapshot[APR_T_RET_REASON]==APR_RET_VPN_OFF && snapshot[APR_T_RET_REQUESTS]==8);
         assert(snapshot[APR_T_NW_CREATED] == (APR_CREATE_SEEN | APR_CREATE_OK));
         assert(snapshot[APR_T_NW_START] == APR_START_SEEN);
         assert(snapshot[APR_T_NW_CANCEL_NORMAL] == 3);

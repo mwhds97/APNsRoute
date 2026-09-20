@@ -87,7 +87,8 @@ printf 'doctor\\n' >> "$APNSROUTE_TEST_DOCTOR_CALLS"
     # Fresh install, missing setting, enabled/disabled experimental upgrade,
     # invalid legacy value, and release reinstall all save enabled mode.
     for saved in ('observe\n', None, 'unbind\n', 'disabled\n', 'invalid\n'):
-        for prior in ((), ('1.1.0~experimental17',), ('1.1.0',)):
+        for prior in ((), ('1.1.0~experimental17',), ('1.1.0',), ('1.2.0',),
+                      ('1.2.1~experimental1',), ('1.2.1~experimental2',), ('1.2.1',)):
             reset(saved)
             result = run(postinst, 'configure', *prior)
             assert result.returncode == 0, result.stderr

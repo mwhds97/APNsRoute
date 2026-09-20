@@ -1,11 +1,11 @@
-APNsRoute 1.2.0 build report
+APNsRoute 1.2.1 build report
 Target: rootful iOS 14.x; intended device includes iPhone SE (2020), A13.
-Release 1.2.0 promotes the user-confirmed experimental6 behavior with lifecycle readability/ownership cleanup and a distinct release build ID. All 13 rules, endpoint retirement, native callbacks and kernel results, automatic installation enablement and doctor protocol 22 remain. The device test kept apsd PID 10284 through cellular/Wi-Fi/cellular with fresh ready couriers and no reported crash. No automatic apsd handover restart, runtime logging or probes. Installation requests one apsd reload. Normal recovery can still create init traffic.
+Release promotion of 1.2.1~experimental2 after review of the user's six phone snapshots. Physical and VPN changes share a minimum two-second quiet period before native endpoint retirement. Runtime timing and diagnostic display use one duration constant. No apsd transition restart. All 13 rules, native callbacks and kernel results, automatic install enablement and protocol-24 doctor diagnostics remain. No runtime logging or network probes. The phone snapshots show grouping and recovery, but do not independently measure elapsed timing, Surge closure or notification delivery.
 
 clang version 13.0.0 (https://github.com/apple/llvm-project.git f765bf5b71fd3637a6f6d1d3e6ab95ca91892a0c)
 Target: x86_64-unknown-linux-gnu
 Thread model: posix
-InstalledDir: /workspace/scratch/63de5f9f4e12/apnsroute-build-cache/toolchain/bin
+InstalledDir: /workspace/scratch/63de5f9f4e12/apnsroute-build-cache/toolchain/linux/iphone/bin
 SDK: iPhoneOS14.5.sdk
 arm64: Mach-O dylib; CPU subtype=0x00000000; dependencies=['/System/Library/Frameworks/Network.framework/Network', '/usr/lib/libSystem.B.dylib', '/usr/lib/libnetwork.dylib']
 arm64e: Mach-O dylib; CPU subtype=0x00000002; dependencies=['/System/Library/Frameworks/Network.framework/Network', '/usr/lib/libSystem.B.dylib', '/usr/lib/libnetwork.dylib']
@@ -19,15 +19,6 @@ arm64e: known legacy ABI linker warnings: 11
 Doctor: standalone arm64, no added entitlements, read-only socket inspection.
 Fat dylib assembled with arm64 and arm64e slices; ad-hoc signed with ldid.
 File/unified logging absent. Doctor uses fixed-size Darwin notification state, not log files.
-Dylib SHA-256: 6ceca04af0c0e9ec15b6dfd85554f2de1ab5c6fb15a2ca97a30bb6bdc7957591
-Package SHA-256: 31633c7bf96312613aa52f53486db6a56e60166c32a885546af89e1e459fef11
+Dylib SHA-256: 94f1c88239475d634cd99256c40f33ad56f39f1ec4bb4593de0bc78118dca450
+Package SHA-256: 05920ea0785dcdeaeec8cb8af046edaa48d129f55e30ef1ef5c36f316fa64f23
 On configure, the package saves enabled mode and requests one apsd restart. The legacy conffile payload is retained to avoid a content-change prompt; postinst performs activation on fresh install, reinstall and upgrade.
-
-Release 1.2.0 validation:
-- Full host regression suite: PASS.
-- Refactored endpoint lifecycle and actual NW observer Blocks: ASan/UBSan PASS; leak detection disabled.
-- Package metadata, upgrade ordering, staged activation, imports and ad-hoc signature page hashes: PASS.
-- Production source edits limited to Retirement.c, NWObserver.c, Tweak.c comments and Version.h. All settings, activation scripts and diagnostic schemas remain byte-identical to experimental6.
-- Ten runtime C units match optimized IR on arm64 and arm64e after expected build-identity/private-name normalization. Refactored Retirement.c differs; source review and lifecycle tests cover it. Full IR identity is not claimed; see PRESERVATION-REPORT.txt.
-- Working experimental6 rollback SHA-256: 2da471b67072646cb5d59115aeac412a0e936ad6ec24e9319d289241021f455d.
-- Device evidence: user-confirmed experimental6 cellular/Wi-Fi/cellular sequence, PID 10284 throughout, fresh ready couriers and no reported crash. Release binary not run remotely on phone.

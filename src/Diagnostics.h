@@ -6,9 +6,9 @@
 #include "DiagnosticFields.h"
 #include "Version.h"
 
-/* Protocol 22: endpoint retirement requests and awaiting-native-result state. */
-#define APR_DIAG_PROTOCOL "22"
-#define APR_DIAG_MAGIC (UINT64_C(0x41505246) << 32)
+/* Protocol 24: shared quiet-period gate, coalesced events and cleanup batches. */
+#define APR_DIAG_PROTOCOL "24"
+#define APR_DIAG_MAGIC (UINT64_C(0x41505248) << 32)
 #define APR_DIAG_PREFIX "local.apnsroute.v" APR_DIAG_PROTOCOL
 #define APR_DIAG_UNBIND (UINT64_C(1) << 16)
 enum apr_stage { APR_ENTERED = 1, APR_WRONG_OS, APR_CONFIG_ERROR, APR_DISABLED,

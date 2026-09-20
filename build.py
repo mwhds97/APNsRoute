@@ -56,7 +56,7 @@ def tool(name):
 report = [
     f'APNsRoute {version} build report',
     'Target: rootful iOS 14.x; intended device includes iPhone SE (2020), A13.',
-    'Release 1.2.0 promotes the user-confirmed experimental6 behavior with lifecycle readability/ownership cleanup and a distinct release build ID. All 13 rules, endpoint retirement, native callbacks and kernel results, automatic installation enablement and doctor protocol 22 remain. The device test kept apsd PID 10284 through cellular/Wi-Fi/cellular with fresh ready couriers and no reported crash. No automatic apsd handover restart, runtime logging or probes. Installation requests one apsd reload. Normal recovery can still create init traffic.',
+    'Release promotion of 1.2.1~experimental2 after review of the user\'s six phone snapshots. Physical and VPN changes share a minimum two-second quiet period before native endpoint retirement. Runtime timing and diagnostic display use one duration constant. No apsd transition restart. All 13 rules, native callbacks and kernel results, automatic install enablement and protocol-24 doctor diagnostics remain. No runtime logging or network probes. The phone snapshots show grouping and recovery, but do not independently measure elapsed timing, Surge closure or notification delivery.',
     '',
 ]
 

@@ -187,13 +187,24 @@ static void report_binding(const uint32_t *v) {
 }
 static void report_retirement(const uint32_t *v) {
     static const char *states[]={"not initialized", "disabled; native lifetime",
-        "waiting for first Wi-Fi/cellular path", "suspended; physical path unknown or unsatisfied",
-        "watching; no older established connections", "handover window; older connections pending",
+        "waiting for initial network observations", "suspended; network observations unavailable",
+        "watching; no older established connections", "shared quiet period or older connections pending",
         "unavailable; native lifetime", "endpoint request awaiting native readiness or closure"};
-    static const char *reasons[]={"none", "fresh matched connection received data on current network",
-        "three-second handover window elapsed"};
+    static const char *reasons[]={"none", "physical change after shared quiet period",
+        "VPN tunnel appeared", "VPN tunnel disappeared", "VPN tunnel replaced"};
+    static const char *vpn_states[]={"not yet observed", "off (no usable up utun)",
+        "on (one usable up utun)", "ambiguous (multiple tunnels)", "snapshot unavailable"};
     unsigned status=v[APR_T_RET_STATUS],reason=v[APR_T_RET_REASON],network=v[APR_T_RET_NETWORK];
-    printf("Handover retirement: %s\n",status<sizeof(states)/sizeof(*states)?states[status]:"unknown status");
+    printf("Connection retirement: %s\n",status<sizeof(states)/sizeof(*states)?states[status]:"unknown status");
+    unsigned quiet=v[APR_T_QUIET_STATE],causes=v[APR_T_QUIET_CAUSES];
+    printf("  Shared quiet period: %s; minimum=%" PRIu32 " ms; remaining at last check=%" PRIu32 " ms\n",
+        quiet==APR_QUIET_IDLE?"idle":quiet==APR_QUIET_WAITING?"waiting":quiet==APR_QUIET_BLOCKED?"blocked by unknown observations":"unknown",
+        APR_QUIET_PERIOD_MS,v[APR_T_QUIET_REMAINING_MS]);
+    printf("  Transition group=%" PRIu32 "; observations in group=%" PRIu32 "; cleanup batches=%" PRIu32 "\n",
+        v[APR_T_QUIET_EPOCH],v[APR_T_QUIET_EVENTS],v[APR_T_RET_BATCHES]);
+    printf("  Group causes: physical=%s VPN-on=%s VPN-off=%s VPN-replaced=%s uncertainty/recovery=%s\n",
+        causes&APR_QUIET_PHYSICAL?"yes":"no",causes&APR_QUIET_VPN_ON?"yes":"no",causes&APR_QUIET_VPN_OFF?"yes":"no",
+        causes&APR_QUIET_VPN_REPLACED?"yes":"no",causes&APR_QUIET_UNCERTAIN?"yes":"no");
     printf("  Monitor network: %s; generation=%" PRIu32 "\n",
         network==APR_RET_WIFI?"Wi-Fi":network==APR_RET_CELLULAR?"cellular":"unknown",v[APR_T_RET_EPOCH]);
     printf("  Held connections=%" PRIu32 "/8; older established connections pending=%" PRIu32 "\n",
@@ -205,7 +216,21 @@ static void report_retirement(const uint32_t *v) {
     printf("  Tracking attempts skipped (capacity/ID/handler unavailable): %" PRIu32 "\n",v[APR_T_RET_SKIPPED]);
     if(v[APR_T_RET_ERROR])printf("  Retirement error: %" PRId32 " (%s)\n",
         (int32_t)v[APR_T_RET_ERROR],strerror((int32_t)v[APR_T_RET_ERROR]));
+    unsigned vpn=v[APR_T_VPN_STATE],change=v[APR_T_VPN_REASON];
+    printf("VPN transition monitoring: %s; interface index=%" PRIu32 "; generation=%" PRIu32 "\n",
+        vpn<sizeof(vpn_states)/sizeof(*vpn_states)?vpn_states[vpn]:"unknown",v[APR_T_VPN_INDEX],v[APR_T_VPN_EPOCH]);
+    printf("  Last VPN change: %s; VPN endpoint requests=%" PRIu32 "\n",
+        change<sizeof(reasons)/sizeof(*reasons)?reasons[change]:"unknown",v[APR_T_VPN_REQUESTS]);
+    printf("  Connections from an older VPN generation=%" PRIu32 " (includes not-yet-ready/awaiting objects)\n",v[APR_T_VPN_PENDING]);
+    printf("  Network-change notifications: %s; registration status=%" PRIu32 "\n",
+        v[APR_T_VPN_NOTIFY]==1?"registered":v[APR_T_VPN_NOTIFY]==2?"unavailable; periodic checks remain":"not started",
+        v[APR_T_VPN_NOTIFY_ERROR]);
+    if(v[APR_T_VPN_ERROR])printf("  VPN snapshot error: %" PRId32 " (%s)\n",
+        (int32_t)v[APR_T_VPN_ERROR],strerror((int32_t)v[APR_T_VPN_ERROR]));
+    puts("  Enabled monitoring checks local interfaces every second and on network events; no packets are sent.");
+    puts("  Tunnel identity is not proof of Surge ownership. Unobserved/coalesced toggles cannot be counted.");
     puts("  Requests cancel the current endpoint; counts do not confirm transport closure or push delivery.");
+    puts("  Readiness/data cannot bypass the quiet period. Native/owner closures are not delayed by this gate.");
     puts("  No handover restart of apsd. Native endpoint fallback/failure handles recovery; new init traffic is possible.");
 }
 static void report_connections(const uint32_t *v) {

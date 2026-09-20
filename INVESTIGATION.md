@@ -1,5 +1,15 @@
 # Investigation — routing and handover cleanup
 
+## 1.2.1 release evidence
+
+The six experimental2 phone snapshots supplied on 2026-09-20 show two uninterrupted apsd sequences. On Wi-Fi, VPN on/off/on keeps PID 8703. The VPN-off snapshot records the previous courier cancelled through normal handling and two replacement couriers ready; cleanup batches and endpoint requests remain zero. Turning VPN on again produces one batch with one request for each of those two objects, followed by a new ready courier.
+
+The physical-network sequence keeps PID 10376 through cellular → Wi-Fi → cellular. Cellular → Wi-Fi adds one endpoint request in one batch and records a ready Wi-Fi replacement. The return to cellular records physical change, VPN-off and VPN-on together in a three-observation transition group. The batch and request counts remain at one because the previous Wi-Fi courier cancelled through normal handling; a new cellular courier is ready. Both cellular snapshots also show the latest matched NECP request accepted with requested and returned utun2/index 21.
+
+Every snapshot reports the quiet period idle, zero older established pending objects, zero awaiting responses and zero tracking skips. Historical failed attempts with POSIX 50 do not themselves show another retirement: their request counts are zero. These are bounded observations, not a complete connection or event history. They do not timestamp the exact delay, map NW IDs to Surge rows or prove notification delivery.
+
+The user approved cleanup and release after reviewing these results. Version 1.2.1 preserves experimental2's transition policy, centralizes its duration constant and updates package identity/documentation. VALIDATION.md separates the existing phone evidence from local verification of the rebuilt release. The sections below retain the earlier investigation as historical context.
+
 ## 1.2.0 release confirmation
 
 Experimental6's subsequent three snapshots retain apsd PID 10284 while the monitor advances cellular generation 1 → Wi-Fi generation 2 → cellular generation 3. The initial courier #2 becomes failed/cancelled after one current-endpoint request; Wi-Fi courier #5 is ready. On return, #5 is cancelled through the owner's path and fresh cellular courier #10 is ready. Total endpoint requests stay at one, awaiting/pending counts are zero and no tracking skips are recorded. The user reports that the sequence works without the earlier crash.

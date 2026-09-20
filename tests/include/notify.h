@@ -4,4 +4,8 @@
 #define NOTIFY_STATUS_OK 0
 uint32_t notify_register_check(const char *name, int *token);
 uint32_t notify_set_state(int token, uint64_t state);
+#if defined(__BLOCKS__)
+#include <dispatch/dispatch.h>
+uint32_t notify_register_dispatch(const char *,int *,dispatch_queue_t,void (^)(int));
+#endif
 #endif

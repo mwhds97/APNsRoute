@@ -50,6 +50,6 @@ ${CC:-cc} -std=c11 -O2 -Itests/vendor/BlocksRuntime -c tests/vendor/BlocksRuntim
     -std=c11 -Wall -Wextra -Werror -O2 -fblocks -Itests/include -Itests/vendor/BlocksRuntime \
     tests/test_retirement.c "$test_output/blocks-runtime.o" "$test_output/blocks-data.o" \
     -pthread -o "$test_output/test_retirement"
-for scenario in main disabled missing queue-failure monitor-failure; do
+for scenario in main vpn unknown recovery opening preflight vpn-notify-failure vpn-baseline lifetimes clock-failure physical-overflow vpn-overflow quiet-overflow disabled missing queue-failure monitor-failure; do
     "$test_output/test_retirement" "$scenario"
 done

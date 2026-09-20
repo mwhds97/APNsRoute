@@ -10,6 +10,7 @@
 #include <time.h>
 #include "../src/Retirement.h"
 #include "../src/Diagnostics.h"
+#include "../src/TunnelSelector.h"
 
 struct TestPath {int tag,refs;nw_path_status_t status;bool wifi,cell;};
 struct TestMonitor {int tag,refs;void (^handler)(nw_path_t);};
@@ -18,15 +19,31 @@ static struct TestMonitor test_monitor={2,1,NULL};
 static struct TestPath cell={3,1,nw_path_status_satisfied,false,true};
 static struct TestPath wifi={3,1,nw_path_status_satisfied,true,false};
 static struct TestPath mixed={3,1,nw_path_status_satisfied,true,true};
-static struct TestPath loop={3,1,nw_path_status_satisfied,false,false};
 static APRRetirementStatus snapshot;
 static unsigned monitor_starts,queues,queue_releases,request_calls,request_ids[32];
-static bool queue_fail,monitor_fail,clock_fail,probe_reentry,defer_result;
+static bool queue_fail,monitor_fail,clock_fail,defer_result;
 static struct Object *spawn_on_request;
 static uint64_t test_time=UINT64_C(1000000000),timer_when;
 static void (*timer_callback)(void *),(*work_callback)(void *);
 static void *timer_context,*work_context;
 static void request_endpoint(nw_connection_t);
+static void vpn_tick(void *);
+static void (*vpn_callback)(void *);
+static uint64_t vpn_when;
+static void (^network_notification)(int);
+static uint32_t registration_error;
+static unsigned snapshots;
+static enum apr_tunnel_choice tunnel_choice=APR_TUN_NONE;
+static APRTunnel test_tunnel;
+static int tunnel_error;
+enum apr_tunnel_choice apr_tunnel_select(unsigned family,APRTunnel *out,int *error) {
+    assert(!family);++snapshots;*out=test_tunnel;*error=tunnel_error;return tunnel_choice;
+}
+uint32_t notify_register_dispatch(const char *name,int *token,dispatch_queue_t q,void (^handler)(int)) {
+    assert(!strcmp(name,"com.apple.system.config.network_change") && q==(void *)1 && !network_notification);
+    if(registration_error)return registration_error;
+    *token=73;network_notification=Block_copy(handler);errno=EIO;return 0;
+}
 
 void apr_diag_retirement(const APRRetirementStatus *s) {snapshot=*s;errno=EIO;}
 void apr_connection_retire_requested(uint32_t id) {assert(id<32);++request_ids[id];errno=EIO;}
@@ -52,19 +69,16 @@ dispatch_time_t dispatch_time(dispatch_time_t base,int64_t delta) {
     assert(!base && delta>=0);return test_time+(uint64_t)delta;
 }
 void dispatch_after_f(dispatch_time_t when,dispatch_queue_t q,void *context,void (*function)(void *)) {
+    if(function==vpn_tick) {assert(q==(void *)1 && !context && !vpn_callback);vpn_when=when;vpn_callback=function;return;}
     assert(q==(void *)1 && !timer_callback);timer_when=when;timer_callback=function;timer_context=context;
 }
 void dispatch_async_f(dispatch_queue_t q,void *context,void (*function)(void *)) {
+    if(function==vpn_tick) {assert(q==(void *)1 && !context && !vpn_callback);vpn_when=test_time;vpn_callback=function;return;}
     assert(q==(void *)1 && !work_callback);work_callback=function;work_context=context;
 }
 nw_path_status_t nw_path_get_status(nw_path_t p) {assert(p->refs>0);errno=EIO;return p->status;}
 bool nw_path_uses_interface_type(nw_path_t p,nw_interface_type_t type) {
     assert(p->refs>0);return type==nw_interface_type_wifi?p->wifi:type==nw_interface_type_cellular?p->cell:false;
-}
-nw_path_t nw_connection_copy_current_path(nw_connection_t object) {
-    struct Object *c=object;assert(c->refs>0);
-    if(probe_reentry)apr_retirement_received(c->id); /* Nested sample must coalesce. */
-    if(c->path)nw_retain(c->path);return c->path;
 }
 static int test_clock(clockid_t clock,struct timespec *now) {
     assert(clock==CLOCK_MONOTONIC);
@@ -77,6 +91,7 @@ static int test_clock(clockid_t clock,struct timespec *now) {
 static void request_endpoint(nw_connection_t object) {
     struct Object *c=object;assert(c->refs>0);
     assert(pthread_mutex_trylock(&retirement_lock)==0);pthread_mutex_unlock(&retirement_lock);
+    assert(test_time>=deadline && snapshot.quiet_state==APR_QUIET_IDLE && observations_known());
     ++c->requests;++request_calls;
     /* Network may synchronously re-enter callback/forget paths. The reference
        must remain alive throughout, without a held registry lock. */
@@ -105,103 +120,209 @@ static void fire_work(void) {
     assert(work_callback);void (*callback)(void *)=work_callback;work_callback=NULL;
     errno=EDOM;callback(work_context);assert(errno==EDOM);
 }
+static void fire_vpn(void) {
+    assert(vpn_callback);if(test_time<vpn_when)test_time=vpn_when;
+    void (*callback)(void *)=vpn_callback;vpn_callback=NULL;
+    errno=EDOM;callback(NULL);assert(errno==EDOM);
+}
+static void tunnel(enum apr_tunnel_choice choice,uint32_t index) {
+    tunnel_choice=choice;test_tunnel=(APRTunnel){.index=index,.families=APR_TUN_V4,.count=index?1:0};
+    if(index)snprintf(test_tunnel.name,sizeof(test_tunnel.name),"utun%u",index);
+    tunnel_error=choice==APR_TUN_UNAVAILABLE?EACCES:0;
+    if(network_notification) {errno=EDOM;network_notification(73);assert(errno==EDOM);}
+    else fire_vpn();
+}
+static void baseline(void) {
+    fire_vpn();change(&cell);
+    assert(snapshot.epoch==1 && snapshot.vpn_epoch==1 && !snapshot.quiet_epoch && !timer_callback);
+}
+static void settle(void) {
+    unsigned limit=0;
+    while(timer_callback || work_callback) {
+        assert(++limit<10);
+        if(work_callback)fire_work();else fire_timer();
+    }
+}
+static void cleanup(void) {
+    for(unsigned i=0;i<RETIRE_LIMIT;++i) if(held[i].id)apr_retirement_forget(held[i].id);
+    if(work_callback)fire_work();
+    if(timer_callback)fire_timer();
+    assert(!snapshot.held && cell.refs==1 && wifi.refs==1 && mixed.refs==1);
+    if(network_notification)Block_release(network_notification);
+    Block_release(test_monitor.handler);nw_release(&test_monitor);dispatch_release((void *)1);
+}
+static void test_burst(void) {
+    baseline();
+    struct Object a={1,1,1,1,&cell,0},b={1,1,2,2,&cell,0},opening={1,1,3,3,&cell,0};
+    struct Object mid={1,1,4,4,&wifi,0},fresh={1,1,5,5,&wifi,0},replacement={1,1,6,6,&wifi,0};
+    ready(&a);ready(&b);apr_retirement_start(&opening,opening.id,opening.handler);
+    uint64_t start=test_time;change(&wifi);
+    assert(snapshot.quiet_events==1 && timer_when==start+QUIET_NS && !request_calls && !work_callback);
+    test_time+=UINT64_C(400000000);tunnel(APR_TUN_NONE,0);
+    ready(&mid);test_time+=UINT64_C(500000000);tunnel(APR_TUN_UNIQUE,8);
+    uint64_t last=test_time;ready(&fresh);
+    apr_retirement_state(opening.id,opening.handler,nw_connection_state_ready);
+    apr_retirement_start(&a,a.id,a.handler); /* repeated start must not refresh age */
+    assert(snapshot.quiet_epoch==1 && snapshot.quiet_events==3 && snapshot.quiet_causes==7);
+    assert(!request_calls && !work_callback && snapshot.pending==4);
+    fire_timer(); /* timer for first change is now too early */
+    assert(test_time==start+QUIET_NS && !request_calls && timer_when==last+QUIET_NS);
+    /* An early timer/work callback cannot round a sub-millisecond remainder down. */
+    test_time=last+QUIET_NS-1;
+    void (*early)(void *)=timer_callback;timer_callback=NULL;errno=EDOM;early(NULL);assert(errno==EDOM);
+    assert(!request_calls && snapshot.quiet_remaining_ms==1 && timer_when==last+QUIET_NS);
+    spawn_on_request=&replacement;fire_timer();
+    assert(test_time==last+QUIET_NS && snapshot.batches==1 && snapshot.requests==4);
+    assert(a.requests==1 && b.requests==1 && opening.requests==1 && mid.requests==1);
+    assert(a.refs==1 && b.refs==1 && opening.refs==1 && mid.refs==1);
+    assert(!fresh.requests && !replacement.requests && fresh.refs==2 && replacement.refs==2);
+    assert(snapshot.quiet_state==APR_QUIET_IDLE && !snapshot.pending && !snapshot.vpn_pending);
+    change(&wifi);tunnel(APR_TUN_UNIQUE,8);fire_vpn();
+    assert(!timer_callback && !work_callback && snapshot.quiet_events==3 && snapshot.batches==1);
+    /* Reverse physical direction, with off/on again, forms one further batch. */
+    change(&cell);test_time+=UINT64_C(400000000);tunnel(APR_TUN_NONE,0);
+    test_time+=UINT64_C(600000000);tunnel(APR_TUN_UNIQUE,9);settle();
+    assert(snapshot.quiet_epoch==2 && snapshot.quiet_events==3 && snapshot.batches==2);
+    assert(fresh.requests==1 && replacement.requests==1 && !snapshot.held);
+    puts("PASS: network/off/on burst in both directions, shared two-second minimum, stale/early timer recheck, one batch, mid-switch and fresh records, native reentry");
+}
+static void test_vpn(void) {
+    baseline();struct Object a={1,1,1,1,&cell,0};ready(&a);
+    tunnel(APR_TUN_NONE,0);assert(timer_callback && !work_callback && !request_calls);
+    uint64_t last=test_time;fire_timer();assert(test_time==last+QUIET_NS && a.requests==1 && a.refs==1);
+    ready(&a);tunnel(APR_TUN_UNIQUE,8);last=test_time;fire_timer();
+    assert(test_time==last+QUIET_NS && a.requests==2 && snapshot.batches==2 && snapshot.epoch==1);
+    ready(&a);tunnel(APR_TUN_UNIQUE,9);last=test_time;fire_timer();
+    assert(test_time==last+QUIET_NS && a.requests==3 && snapshot.reason==APR_RET_VPN_REPLACED);
+    puts("PASS: isolated same-network VPN off/on/replacement all wait at least two seconds");
+}
+static void test_unknown(void) {
+    baseline();struct Object a={1,1,1,1,&cell,0};ready(&a);
+    change(&wifi);test_time+=UINT64_C(500000000);change(&mixed);fire_timer();
+    assert(!request_calls && snapshot.quiet_state==APR_QUIET_BLOCKED && !timer_callback);
+    test_time+=UINT64_C(5000000000);fire_vpn();assert(!request_calls && !timer_callback);
+    change(&wifi);uint64_t resumed=test_time;
+    assert(timer_when==resumed+QUIET_NS && snapshot.quiet_epoch==1);
+    test_time+=UINT64_C(500000000);tunnel(APR_TUN_UNAVAILABLE,0);
+    assert(snapshot.vpn_epoch==1 && snapshot.vpn_error==EACCES);fire_timer();
+    assert(!request_calls && snapshot.quiet_state==APR_QUIET_BLOCKED);
+    tunnel(APR_TUN_AMBIGUOUS,9);fire_timer();assert(!request_calls && snapshot.vpn_epoch==1);
+    tunnel(APR_TUN_UNIQUE,7);resumed=test_time;fire_timer();
+    assert(test_time==resumed+QUIET_NS && a.requests==1 && a.refs==1 && snapshot.batches==1);
+    puts("PASS: lost/ambiguous observations block every automatic request; recovery requires a new full quiet period and no false VPN-off");
+}
+static void test_recovery(void) {
+    baseline();struct Object a={1,1,1,1,&cell,0};ready(&a);defer_result=true;
+    tunnel(APR_TUN_NONE,0);fire_timer();assert(a.requests==1 && snapshot.awaiting==1 && a.refs==2);
+    tunnel(APR_TUN_UNIQUE,8);test_time+=UINT64_C(500000000);change(&wifi);
+    apr_retirement_state(a.id,a.handler,nw_connection_state_ready);
+    assert(!work_callback && !snapshot.awaiting && snapshot.pending==1);
+    fire_timer();assert(a.requests==1 && timer_callback);fire_timer();
+    assert(a.requests==2 && snapshot.awaiting==1 && snapshot.batches==2);
+    tunnel(APR_TUN_NONE,0);tunnel(APR_TUN_UNIQUE,9);settle();
+    assert(a.requests==2 && snapshot.awaiting==1); /* do not duplicate outstanding request */
+    apr_retirement_state(a.id,a.handler,nw_connection_state_waiting);assert(!work_callback);
+    apr_retirement_state(a.id,a.handler,nw_connection_state_ready);assert(work_callback);
+    /* A new event after work is queued must still postpone the actual call. */
+    tunnel(APR_TUN_NONE,0);uint64_t last=test_time;fire_work();
+    assert(a.requests==2 && timer_callback);fire_timer();
+    assert(test_time==last+QUIET_NS && a.requests==3 && snapshot.awaiting==1);
+    apr_retirement_state(a.id,a.handler,nw_connection_state_ready);assert(!work_callback && !snapshot.pending);
+    apr_retirement_forget(a.id);assert(a.refs==1 && !snapshot.held);defer_result=false;
+    puts("PASS: awaiting recovery, later generations, readiness and stale queued work never bypass the shared quiet gate");
+}
+static void test_opening(void) {
+    baseline();struct Object a={1,1,1,1,&cell,0},fresh={1,1,2,2,&wifi,0};
+    apr_retirement_start(&a,a.id,a.handler);tunnel(APR_TUN_NONE,0);fire_timer();
+    assert(!request_calls && snapshot.vpn_pending==1 && snapshot.quiet_state==APR_QUIET_IDLE);
+    apr_retirement_state(a.id,a.handler,nw_connection_state_ready);assert(work_callback);
+    tunnel(APR_TUN_UNIQUE,8);uint64_t last=test_time;ready(&fresh);fire_work();
+    assert(!request_calls);fire_timer();assert(test_time==last+QUIET_NS && a.requests==1 && !fresh.requests);
+    apr_retirement_forget(fresh.id);assert(fresh.refs==1);
+    /* Physical handover still protects first readiness on the new network. */
+    struct Object physical={1,1,3,3,&wifi,0};apr_retirement_start(&physical,physical.id,physical.handler);
+    change(&wifi);apr_retirement_state(physical.id,physical.handler,nw_connection_state_ready);fire_timer();
+    assert(!physical.requests && snapshot.batches==1);apr_retirement_forget(physical.id);
+    puts("PASS: late in-flight readiness waits for any new quiet deadline; current-generation starts and first physical readiness are protected");
+}
+static void test_preflight(void) {
+    baseline();struct Object a={1,1,1,1,&cell,0};ready(&a);change(&wifi);
+    tunnel_choice=APR_TUN_NONE;test_tunnel=(APRTunnel){0}; /* no delivered event/poll */
+    fire_timer();uint64_t observed=test_time;assert(!request_calls && timer_when==observed+QUIET_NS);
+    tunnel_choice=APR_TUN_UNIQUE;test_tunnel=(APRTunnel){.name="utun8",.index=8,.count=1,.families=APR_TUN_V4};
+    fire_timer();observed=test_time;assert(!request_calls && timer_when==observed+QUIET_NS);
+    fire_timer();assert(test_time==observed+QUIET_NS && a.requests==1 && snapshot.batches==1);
+    assert(snapshot.quiet_events==3);
+    puts("PASS: pre-cleanup tunnel snapshot catches missed off/on hints and starts a full new quiet period");
+}
+static void test_polling(void) {
+    baseline();assert(snapshot.vpn_notify==2 && snapshot.vpn_notify_error==9 && !network_notification);
+    struct Object a={1,1,1,1,&cell,0};ready(&a);
+    tunnel_choice=APR_TUN_NONE;test_tunnel=(APRTunnel){0};fire_vpn();
+    assert(timer_callback && !request_calls);
+    tunnel_choice=APR_TUN_UNIQUE;test_tunnel=(APRTunnel){.name="utun8",.index=8,.count=1,.families=APR_TUN_V4};
+    fire_vpn();uint64_t last=test_time;fire_timer();assert(!request_calls);fire_timer();
+    assert(test_time==last+QUIET_NS && a.requests==1 && snapshot.batches==1 && snapshot.quiet_events==2);
+    puts("PASS: denied network notifications retain polling and shared debounce");
+}
+static void test_baseline(void) {
+    struct Object a={1,1,1,1,&cell,0};ready(&a);fire_vpn();
+    assert(!snapshot.vpn_epoch && !timer_callback && !work_callback);
+    tunnel(APR_TUN_UNIQUE,7);assert(snapshot.vpn_epoch==1 && !timer_callback && !a.requests);
+    tunnel(APR_TUN_NONE,0);uint64_t last=test_time;fire_timer();
+    assert(test_time==last+QUIET_NS && a.requests==1 && !snapshot.epoch);
+    puts("PASS: unavailable startup and first VPN baseline are nondestructive; later off observes the same quiet gate before physical baseline");
+}
+static void test_lifetimes(void) {
+    baseline();struct Object many[9];
+    for(unsigned i=0;i<9;++i) {many[i]=(struct Object){1,1,10+i,10+i,&cell,0};ready(&many[i]);}
+    assert(snapshot.held==8 && snapshot.skipped==1 && many[8].refs==1);
+    apr_retirement_start(&many[8],0,1);apr_retirement_start(&many[8],19,0);assert(snapshot.skipped==3);
+    apr_retirement_handler(10,20);apr_retirement_state(10,10,nw_connection_state_failed);assert(many[0].refs==2);
+    apr_retirement_state(10,20,nw_connection_state_failed);assert(many[0].refs==1);
+    apr_retirement_handler(11,0);apr_retirement_forget(12);assert(many[1].refs==1 && many[2].refs==1);
+    change(&wifi);apr_retirement_state(13,13,nw_connection_state_cancelled);assert(many[3].refs==1);
+    fire_timer();assert(request_calls==4 && snapshot.batches==1 && !snapshot.held);
+    for(unsigned i=0;i<9;++i)assert(many[i].refs==1);
+    puts("PASS: bounded ownership, handler replacement/clear, stale native callbacks, capacity, owner and natural closures before coalesced cleanup");
+}
+static void test_failure(const char *scenario) {
+    baseline();struct Object a={1,1,1,1,&cell,0};ready(&a);
+    if(!strcmp(scenario,"clock-failure")) {clock_fail=true;change(&wifi);assert(snapshot.error==EIO);}
+    else {
+        if(!strcmp(scenario,"physical-overflow")) {report.epoch=UINT32_MAX;change(&wifi);}
+        else if(!strcmp(scenario,"vpn-overflow")) {report.vpn_epoch=UINT32_MAX;tunnel(APR_TUN_NONE,0);}
+        else {report.quiet_epoch=UINT32_MAX;change(&wifi);}
+        assert(snapshot.error==EOVERFLOW);
+    }
+    assert(snapshot.status==APR_RET_UNAVAILABLE && !snapshot.held && !a.requests && a.refs==1);
+    fire_vpn();assert(!vpn_callback);
+    puts("PASS: clock/generation failure releases references without teardown");
+}
 int main(int argc,char **argv) {
-    assert(argc==2);bool disabled=!strcmp(argv[1],"disabled"),missing=!strcmp(argv[1],"missing");
-    queue_fail=!strcmp(argv[1],"queue-failure");monitor_fail=!strcmp(argv[1],"monitor-failure");
+    assert(argc==2);const char *scenario=argv[1];
+    bool disabled=!strcmp(scenario,"disabled"),missing=!strcmp(scenario,"missing");
+    queue_fail=!strcmp(scenario,"queue-failure");monitor_fail=!strcmp(scenario,"monitor-failure");
+    registration_error=!strcmp(scenario,"vpn-notify-failure")?9:0;
+    tunnel_choice=!strcmp(scenario,"vpn-baseline")?APR_TUN_UNAVAILABLE:APR_TUN_UNIQUE;
+    test_tunnel=(APRTunnel){.name="utun7",.index=7,.families=APR_TUN_V4,.count=1};
     errno=EDOM;apr_retirement_init(!disabled,missing?NULL:request_endpoint);assert(errno==EDOM);
     if(disabled || missing || queue_fail || monitor_fail) {
-        assert(!monitor_starts && !snapshot.held && !request_calls);
+        assert(!monitor_starts && !snapshot.held && !request_calls && !snapshots && !vpn_callback && !network_notification);
         assert(snapshot.status==(disabled?APR_RET_DISABLED:APR_RET_UNAVAILABLE));
-        assert(queues==(unsigned)(queue_fail || monitor_fail));
-        assert(queue_releases==(unsigned)monitor_fail);
-        puts("PASS: retirement disabled/unavailable initialization has no connection side effects");return 0;
+        assert(queues==(unsigned)(queue_fail || monitor_fail) && queue_releases==(unsigned)monitor_fail);
+        puts("PASS: disabled/unavailable startup has no monitoring or connection side effects");return 0;
     }
-    assert(monitor_starts==1 && snapshot.status==APR_RET_WAITING);
-    apr_retirement_init(true,request_endpoint);assert(monitor_starts==1); /* once only */
-    struct Object a={1,1,1,1,&cell,0},b={1,1,2,2,&wifi,0},c={1,1,3,3,&cell,0};
-    ready(&a);assert(a.refs==2);change(&cell);
-    assert(snapshot.epoch==1 && snapshot.network==APR_RET_CELLULAR && !snapshot.pending && !timer_callback);
-    change(&cell);assert(!timer_callback && !request_calls);
-    change(&wifi);assert(snapshot.epoch==2 && snapshot.pending==1 && timer_callback);
-    ready(&b);assert(b.refs==2 && snapshot.pending==1);
-    apr_retirement_received(a.id);assert(!work_callback); /* old data cannot protect reuse */
-    b.path=&loop;apr_retirement_received(b.id);assert(!work_callback); /* init-like loopback not proof */
-    b.path=&wifi;probe_reentry=true;errno=EDOM;apr_retirement_received(b.id);
-    assert(errno==EDOM && work_callback);probe_reentry=false;
-    apr_retirement_received(b.id); /* work coalesces */
-    struct Object replacement={1,1,21,21,&wifi,0};spawn_on_request=&replacement;
-    fire_work();assert(a.requests==1 && a.refs==1 && !b.requests && b.refs==2);
-    assert(replacement.refs==2 && !replacement.requests);apr_retirement_forget(replacement.id);
-    assert(replacement.refs==1);
-    assert(snapshot.requests==1 && snapshot.reason==APR_RET_NEW_DATA && !snapshot.pending && request_ids[1]==1);
-    fire_timer();assert(request_calls==1 && !timer_callback);
-    /* A fresh spare opened on Wi-Fi must not become exempt from the next
-       transition merely because its connection path says cellular. */
-    ready(&c);change(&cell);assert(snapshot.epoch==3 && snapshot.pending==2);
-    struct Object d={1,1,4,4,&cell,0};ready(&d);
-    fire_timer();assert(b.requests==1 && c.requests==1 && !d.requests);
-    assert(b.refs==1 && c.refs==1 && d.refs==2 && snapshot.reason==APR_RET_DEADLINE);
-    assert(snapshot.requests==3 && snapshot.held==1);
-    /* Natural cancellation, terminal callbacks, and handler clear release the
-       owned reference and prevent later automatic cancellation. */
-    apr_retirement_forget(d.id);assert(d.refs==1 && !snapshot.held);
-    struct Object e={1,1,5,5,&cell,0};ready(&e);
-    apr_retirement_handler(e.id,6);apr_retirement_state(e.id,5,nw_connection_state_cancelled);
-    assert(e.refs==2);apr_retirement_state(e.id,6,nw_connection_state_failed);assert(e.refs==1);
-    ready(&e);apr_retirement_handler(e.id,0);assert(e.refs==1);
-    /* A start before a transition that only reaches readiness afterward is
-       protected. An old ready connection remains eligible despite a repeat start. */
-    struct Object f={1,1,6,6,&cell,0},g={1,1,7,7,&wifi,0};ready(&f);
-    apr_retirement_start(&g,g.id,g.handler);change(&wifi);
-    apr_retirement_state(g.id,g.handler,nw_connection_state_ready);
-    apr_retirement_start(&f,f.id,f.handler);assert(snapshot.pending==1);
-    apr_retirement_received(g.id);assert(work_callback);
-    /* A flap invalidates queued early-cleanup evidence. One delayed callback
-       survives and reschedules to the latest transition deadline. */
-    test_time+=UINT64_C(1000000000);change(&cell);
-    struct Object h={1,1,8,8,&cell,0};ready(&h);
-    fire_work();assert(!f.requests && !g.requests && !h.requests);
-    fire_timer();assert(timer_callback && !f.requests); /* original earlier deadline */
-    fire_timer();assert(f.requests==1 && g.requests==1 && !h.requests && h.refs==2);
-    /* Unknown/mixed/unsatisfied monitor paths suspend retirement. */
-    change(&wifi);change(&mixed);assert(!snapshot.network);
-    fire_timer();assert(!h.requests && !timer_callback);
-    change(NULL);wifi.status=nw_path_status_unsatisfied;change(&wifi);
-    assert(!h.requests && !timer_callback && !snapshot.network);wifi.status=nw_path_status_satisfied;
-    change(&wifi);assert(timer_callback);fire_timer();assert(h.requests==1);
-    /* No unbounded ownership on capacity/ID/handler failures. */
-    struct Object many[9];
-    for(unsigned i=0;i<9;++i) {many[i]=(struct Object){1,1,10+i,10+i,&wifi,0};ready(&many[i]);}
-    assert(snapshot.held==8 && snapshot.skipped==1 && many[8].refs==1);
-    apr_retirement_start(&many[8],0,1);apr_retirement_start(&many[8],19,0);
-    assert(snapshot.skipped==3 && many[8].refs==1);
-    for(unsigned i=0;i<8;++i) apr_retirement_forget(many[i].id);
-    assert(!snapshot.held);
-    /* Endpoint fallback can retain the NW object while replacing its TCP
-       transport. Keep ownership across the request; do not retry while native
-       recovery is outstanding, even if another network change occurs. */
-    struct Object fallback={1,1,22,22,&wifi,0};ready(&fallback);defer_result=true;
-    change(&cell);fire_timer();
-    assert(fallback.requests==1 && fallback.refs==2 && snapshot.held==1);
-    assert(snapshot.awaiting==1 && !snapshot.pending && snapshot.status==APR_RET_RECOVERING);
-    change(&wifi);assert(!timer_callback && fallback.requests==1 && snapshot.awaiting==1);
-    apr_retirement_state(fallback.id,fallback.handler,nw_connection_state_waiting);
-    assert(snapshot.awaiting==1);
-    apr_retirement_state(fallback.id,fallback.handler,nw_connection_state_ready);
-    assert(!snapshot.awaiting && !snapshot.pending && snapshot.status==APR_RET_IDLE);
-    change(&cell);fire_timer();assert(fallback.requests==2 && snapshot.awaiting==1);
-    apr_retirement_forget(fallback.id);assert(fallback.refs==1 && !snapshot.held && !snapshot.awaiting);
-    apr_retirement_state(fallback.id,fallback.handler,nw_connection_state_ready);
-    assert(!snapshot.held);defer_result=false;
-    change(&wifi);
-    /* Clock failure relinquishes owned references without forced teardown. */
-    struct Object j={1,1,20,20,&wifi,0};ready(&j);clock_fail=true;change(&cell);
-    assert(snapshot.status==APR_RET_UNAVAILABLE && snapshot.error==EIO && j.refs==1 && !j.requests);
-    assert(!snapshot.held);
-    if(timer_callback)fire_timer();
-    if(work_callback)fire_work();
-    assert(cell.refs==1 && wifi.refs==1 && loop.refs==1 && mixed.refs==1);
-    Block_release(test_monitor.handler);nw_release(&test_monitor);dispatch_release((void *)1);
-    assert(test_monitor.refs==0);
-    puts("PASS: real monitor Block, endpoint fallback/rearming, bidirectional requests, fresh/spare generations, reentry, lifetimes, bounded scheduling, flaps, native closures, capacity and failure rollback");
+    apr_retirement_init(true,request_endpoint);assert(monitor_starts==1);
+    if(!strcmp(scenario,"main"))test_burst();
+    else if(!strcmp(scenario,"vpn"))test_vpn();
+    else if(!strcmp(scenario,"unknown"))test_unknown();
+    else if(!strcmp(scenario,"recovery"))test_recovery();
+    else if(!strcmp(scenario,"opening"))test_opening();
+    else if(!strcmp(scenario,"preflight"))test_preflight();
+    else if(!strcmp(scenario,"vpn-notify-failure"))test_polling();
+    else if(!strcmp(scenario,"vpn-baseline"))test_baseline();
+    else if(!strcmp(scenario,"lifetimes"))test_lifetimes();
+    else test_failure(scenario);
+    cleanup();return 0;
 }

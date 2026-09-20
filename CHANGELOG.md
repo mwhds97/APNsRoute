@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.2.1 — 2026-09-20
+
+- Promotes the tested experimental2 behavior to release, with package name APNsRoute, version 1.2.1 and build ID 0x01020100.
+- Retains one shared minimum two-second quiet period for Wi-Fi/cellular and VPN on/off/replacement changes. Further observed events reset the same deadline; native closures can leave no extra work to perform.
+- Centralizes the quiet-period duration used by the runtime and doctor display. No matching, routing, callback, cancellation, tracking or timing-policy change is introduced by the cleanup.
+- Records six user-provided phone snapshots: VPN off/on with apsd PID 8703 and cellular/Wi-Fi/cellular with PID 10376. They show ready replacement couriers, no pending/awaiting objects, no tracking skips and a combined three-event return-to-cellular group without additional cleanup. They do not independently timestamp the delay or prove push delivery.
+- Keeps all 13 rules, nine hooks, automatic installation enablement, one installation reload and doctor protocol v24. Runtime logs, probes and automatic transition restarts remain absent.
+- Updates release/upgrade checks and documentation. The source archive contains the release installer and unchanged 1.2.0 and 1.2.1~experimental2 rollback installers.
+
+Historical entries below describe the contents and evidence of their respective revisions. Current installation, rollback and validation details are in README.md and VALIDATION.md.
+
+## 1.2.1~experimental2
+
+- Coalesces Wi-Fi/cellular and VPN on/off/replacement events into one minimum two-second quiet period. Every further observed change extends the same deadline. Removes immediate VPN cleanup and the receive-data shortcut.
+- Rechecks the latest deadline and tunnel snapshot before every automatic batch. Unknown observations block cleanup; recovery gets a new full quiet period. Duplicate stable snapshots do not prolong the wait.
+- Keeps native endpoint recovery, bounded ownership, per-object generations and current-generation protection. Late readiness and already-queued work cannot bypass the shared gate. Native/owner closures remain under their original control.
+- Protocol v24 adds quiet-state/group/event/cause/remaining-time and actual-batch fields; 200 total. Retains matching, routing, automatic activation, no autonomous apsd restart, no runtime logs and no probes.
+- Adds exact timing, three-event burst, missed-hint preflight, delayed recovery, capacity/ownership and failure regressions. Includes unchanged experimental1 and 1.2.0 rollback installers. Phone confirmation is pending.
+
+## 1.2.1~experimental1
+
+- Adds validated VPN-on/off/tunnel-replacement generations independently of physical Wi-Fi/cellular changes. Uses network-change/path-monitor events plus one local one-second interface check; no packets or runtime logs.
+- Requests endpoint retirement for all older tracked matching established apsd objects, including init and courier. An older in-flight start is retired on readiness; newer starts are kept. Keeps the working current-endpoint API, native callbacks and the eight-object ownership bound.
+- Preserves the last known VPN baseline through failed or ambiguous snapshots. Coalesces work and avoids duplicate calls while awaiting native results; a later VPN generation is handled after readiness.
+- Retains 1.2.0 matching, routing edits/guards, caller-requested cancellation, automatic installation enablement and no autonomous apsd restart. Protocol v23 adds nine doctor fields (194 total).
+- Adds host lifecycle regressions for same-network toggles, periodic fallback/denied registration, delayed first readiness, rapid changes, unknown snapshots, physical overlap, native reentry and overflow. Includes a reproducible ASan/UBSan runner and the unchanged 1.2.0 rollback installer. Phone testing of VPN-toggle behavior is pending.
+
 ## 1.2.0
 
 - Promotes the user-confirmed experimental6 routing and handover behavior to release, with package name APNsRoute, version 1.2.0 and build ID 0x01020000.

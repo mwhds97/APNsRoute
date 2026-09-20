@@ -10,6 +10,5 @@ void apr_retirement_init(bool enabled,APRRetireFunction request_endpoint);
 void apr_retirement_start(nw_connection_t connection,uint32_t id,uint32_t handler);
 void apr_retirement_handler(uint32_t id,uint32_t handler);
 void apr_retirement_state(uint32_t id,uint32_t handler,unsigned state);
-void apr_retirement_received(uint32_t id);
 void apr_retirement_forget(uint32_t id);
 #endif

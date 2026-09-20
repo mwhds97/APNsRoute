@@ -106,7 +106,7 @@ static void receive_tests(struct Connection *c,struct Connection *other,struct T
 }
 
 
-static unsigned retire_starts,retire_states,retire_receives,retire_forgets;
+static unsigned retire_starts,retire_states,retire_forgets;
 void apr_retirement_start(nw_connection_t c,uint32_t id,uint32_t handler) {
     assert(c && id);(void)handler;++retire_starts;errno=EIO;
 }
@@ -114,7 +114,6 @@ void apr_retirement_handler(uint32_t id,uint32_t handler) {assert(id);(void)hand
 void apr_retirement_state(uint32_t id,uint32_t handler,unsigned state) {
     assert(id && handler && state<=5);++retire_states;errno=EIO;
 }
-void apr_retirement_received(uint32_t id) {assert(id);++retire_receives;errno=EIO;}
 void apr_retirement_forget(uint32_t id) {assert(id);++retire_forgets;errno=EIO;}
 void apr_diag_event(enum apr_event e) {assert(e<APR_EVENT_COUNT);events[e]=true;errno=EIO;}
 void apr_diag_nw_cancel_path(unsigned detail) {cancel_detail=detail;errno=EIO;}
@@ -350,6 +349,6 @@ int main(void) {
     assert(send_calls==7 && courier.refs==1 && init.refs==1 && path.refs==1);
     receive_tests(&c,&other,&path);
     assert(courier.refs==1 && init.refs==1 && path.refs==1);
-    assert(retire_starts==2 && retire_states && retire_receives==2 && retire_forgets);
+    assert(retire_starts==2 && retire_states && retire_forgets);
     puts("PASS: actual escaping Blocks, callback replacement/removal and cancellation, exact arguments/errno, public-only report gating, cancellation upgrade/fallback/reentry and live replacement preservation");
 }

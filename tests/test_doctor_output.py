@@ -89,7 +89,12 @@ int main(int argc,char **argv) {
     set_field("connection-overflow",2);
     set_field("ret-status",APR_RET_IDLE);set_field("ret-network",APR_RET_WIFI);
     set_field("ret-epoch",3);set_field("ret-held",2);set_field("ret-requests",1);
-    set_field("ret-last-id",1);set_field("ret-reason",APR_RET_DEADLINE);set_field("ret-skipped",1);
+    set_field("quiet-state",APR_QUIET_WAITING);set_field("quiet-epoch",3);set_field("quiet-events",3);
+    set_field("quiet-causes",7);set_field("quiet-remaining-ms",1200);set_field("ret-batches",2);
+    set_field("ret-last-id",1);set_field("ret-reason",APR_RET_QUIET);set_field("ret-skipped",1);
+    set_field("vpn-state",APR_VPN_ON);set_field("vpn-index",7);set_field("vpn-epoch",3);
+    set_field("vpn-pending",1);set_field("vpn-requests",4);set_field("vpn-reason",APR_RET_VPN_ON);
+    set_field("vpn-notify",2);set_field("vpn-notify-error",9);set_field("vpn-error",13);
     set_field("conn-0-retire-requests",1);
     report_transport(1,1,true);
 }
@@ -105,11 +110,19 @@ with tempfile.TemporaryDirectory(prefix='apnsroute-doctor-test-') as directory:
     for expected in (
         'Latest matched NECP request #3: tunnel-binding ADD accepted',
         'Original client flags: 0x00001000 (guards unchanged)',
-        'Handover retirement: watching; no older established connections',
+        'Connection retirement: watching; no older established connections',
         'Monitor network: Wi-Fi; generation=3',
+        'Shared quiet period: waiting; minimum=2000 ms; remaining at last check=1200 ms',
+        'Transition group=3; observations in group=3; cleanup batches=2',
+        'Group causes: physical=yes VPN-on=yes VPN-off=yes VPN-replaced=no uncertainty/recovery=no',
         'Held connections=2/8; older established connections pending=0',
         'Endpoint retirement requests=1; last connection=#1',
-        'Last retirement reason: three-second handover window elapsed',
+        'VPN transition monitoring: on (one usable up utun); interface index=7; generation=3',
+        'Last VPN change: VPN tunnel appeared; VPN endpoint requests=4',
+        'Connections from an older VPN generation=1 (includes not-yet-ready/awaiting objects)',
+        'Network-change notifications: unavailable; periodic checks remain; registration status=9',
+        'VPN snapshot error: 13',
+        'Last retirement reason: physical change after shared quiet period',
         'Tracking attempts skipped (capacity/ID/handler unavailable): 1',
         'No handover restart of apsd. Native endpoint fallback/failure handles recovery',
         'These diagnostic rows own no references',
@@ -141,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix='apnsroute-doctor-test-') as directory:
         assert retired not in output, retired
     for scenario,expected in (
         ('disabled','disabled; native lifetime'),
-        ('suspended','suspended; physical path unknown or unsatisfied'),
+        ('suspended','suspended; network observations unavailable'),
         ('failure','Retirement error: 5'),
         ('recovering','endpoint request awaiting native readiness or closure'),
     ):

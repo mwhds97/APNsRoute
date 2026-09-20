@@ -1,55 +1,69 @@
-# Validation — 1.2.0
+# Validation — 1.2.1
 
-## Device evidence
+## Release scope
 
-The user confirmed experimental6 works without the earlier crash and supplied three doctor snapshots on iPhone SE (2020), iOS 14.8, Substitute 2.3.1 and Surge 5.5.3. All snapshots identify apsd PID **10284** and protocol v22.
+Release 1.2.1 promotes 1.2.1~experimental2 after the user supplied six phone snapshots and approved release. The cleanup puts the existing 2,000 ms duration in one constant shared by the runtime and doctor. Package/build identity, release documentation, activation-test upgrade cases and package gates are updated. Routing and transition policy are preserved.
 
-| Stage | Monitor generation | Ready courier | Previous courier | Endpoint requests / awaiting |
+## Phone evidence from experimental2
+
+These are two independent sequences on the user's iPhone SE (2020), iOS 14.8, rootful unc0ver / Substitute 2.3.1 and Surge 5.5.3. IDs and cumulative counters apply only within each apsd process.
+
+| Snapshot | apsd PID | Cleanup batches | Endpoint requests | Ready courier IDs |
 | --- | --- | --- | --- | --- |
-| Cellular before | 1 | #2 | — | 0 / 0 |
-| Wi-Fi | 2 | #5 | #2 failed/cancelled after one retirement request | 1 / 0 |
-| Cellular after | 3 | #10 | #5 failed/cancelled through owner cancellation | 1 / 0 |
+| 1-wifi-on-vpn-on.log | 8703 | 0 | 0 | 4 |
+| 2-wifi-on-vpn-off.log | 8703 | 0 | 0 | 10, 11 |
+| 3-wifi-on-vpn-on.log | 8703 | 1 | 2 | 12 |
+| cellular_before (4).log | 10376 | 0 | 0 | 2 |
+| wifi (6).log | 10376 | 1 | 1 | 5 |
+| cellular_after (4).log | 10376 | 1 | 1 | 10 |
 
-Older pending and tracking-skip counts were zero in all readings. The request count stayed at one on return to cellular because the Wi-Fi courier closed through its owner's path. The same PID and progressing generations support process continuity across the sequence; the user reported no crash. Wi-Fi also created one additional init object and several secondary attempts that failed with POSIX 50. A successful courier reached readiness on each network. Diagnostic observations are not a verified mapping to Surge rows; the user's observation supplies the practical success confirmation.
+The VPN-on batch requests retirement of two distinct old objects once each. On return to cellular, physical change, VPN-off and VPN-on appear together in one three-observation group; normal handling cancelled the old courier and no extra automatic batch was needed. Every snapshot reports quiet idle, no older established pending objects, no awaiting responses and no tracking skips. Each sequence retains its apsd PID. Both cellular NECP samples show accepted requests with requested and returned utun2/index 21.
 
-The release binary itself has not been run remotely on the phone. Confirmation applies to the experimental6 behavior and this reported round trip. Earlier experimental5's CFNetwork SIGABRT remains documented in INVESTIGATION.md; the exact private assertion was not supplied.
+Historical failed attempts remain visible alongside the ready couriers. Their zero retirement-request counts do not show repeated automatic cleanup. The snapshots do not independently timestamp the two-second wait, map NW object IDs to Surge rows, or prove notification delivery. They are evidence for the tested experimental2 behavior, not a claim that this rebuilt release has already run on the phone.
 
-## Cleanup preservation
+## Host regressions — passed
 
-The release keeps routing predicates, NECP input changes/guards and returned bytes, the current-endpoint API, three-second timing, eight-object bound, native callback forwarding and owner-requested cancellation behavior. The controller, installer scripts and saved configuration are unchanged. Source edits clarify lifecycle names, use designated initialization and shared reference transfer, and remove an unused include. Version/build identity changes to 1.2.0 / 0x01020000; protocol v22 and its 185 fields remain.
+`BLOCKS_CC=/path/to/clang sh tests/run.sh` passes. The retirement fixtures compile the actual production module and real escaping Blocks with an explicit monotonic clock/dispatch harness.
 
-PRESERVATION-REPORT.txt records optimized IR comparison against experimental6 for eleven runtime C units on arm64 and arm64e. Ten units match on both architectures after normalizing only the expected build ID and renamed private globals. Retirement.c differs because helper extraction and statement layout affect generated IR; it was reviewed at source level and passes the same lifecycle tests and sanitizer checks. This is not a claim of IR or binary identity for the entire release.
+The central timing case observes physical change at t=0, VPN-off at t=0.4 s and VPN-on at t=0.9 s. No automatic request occurs before t=2.9 s. The earlier timer reschedules, a callback one nanosecond before the final deadline still produces no request, and one batch selects eligible old objects at the final deadline. Stable snapshots produce no additional batch. The reverse direction is covered.
 
-## Host regression coverage
+All 17 retirement scenarios pass: main, vpn, unknown, recovery, opening, preflight, vpn-notify-failure, vpn-baseline, lifetimes, clock-failure, physical-overflow, vpn-overflow, quiet-overflow, disabled, missing, queue-failure and monitor-failure. They cover standalone toggles/replacement, three-event bursts, pre-cleanup discovery of missed events, unknown-state blocking/recovery, first baselines, late readiness, stale work, awaiting recovery, owner closure, callback reentry, capacity and bounded ownership, and nondestructive failure/overflow handling. Every mock request checks that the latest deadline elapsed, observations are reliable and the mutex is not held.
 
-`BLOCKS_CC=/path/to/clang sh tests/run.sh` passes:
+Matching, NECP input/result/exclusion, constructor, hook lookup, tunnel selection, diagnostic publication/output, connection-row and NW callback regressions pass. The doctor output fixture retains the exact displayed 2,000 ms minimum. Activation tests exercise fresh install, upgrades from 1.2.0 and both 1.2.1 experiments, release reinstall and earlier supported versions, including a previously disabled saved setting. Installation enables the tweak and requests one reload; ordinary process starts still honor the saved setting.
 
-- All 13 domain/CIDR rules, boundaries, hostname case/root dot, IPv4-mapped literals, arbitrary ports and unrelated endpoints.
-- Actual constructor modes, invalid/missing configuration, unsupported OS, missing hook engine and missing current-endpoint capability; nine hook requests and retirement initialization only after setup. Disabled mode starts no retirement monitor.
-- Actual NECP parser/ADD forwarding, exact changed-byte offsets, original exclusions/flags, agent conversion, checked delegates, malformed/conflicting layouts, native/failure passthrough and errno. Result parsing and client/flow tracking preserve returned bytes.
-- Eight independent connection rows, scalar IDs, handler/address reuse, delayed stale callbacks, terminal slot reuse, capacity, saturation and retirement counts distinct from caller cancellations.
-- Actual escaping state/receive Blocks with the real LLVM Blocks runtime. Original values, callbacks/errors, count and errno survive forwarding. NULL/unmatched traffic, content plus error and late callbacks are covered. Existing send completions remain untouched.
-- Caller-requested cancellation upgrade and native fallback. Automatic retirement calls only current-endpoint cancellation, forwards synchronous internal cancellation without upgrading it, preserves caller counters and fabricates no callback. Missing endpoint capability causes no full cancellation.
-- Retirement monitor Block with an explicit fake monotonic clock and bounded dispatch harness: both network directions, initial baseline, fresh readiness after transition, cellular spares opened on Wi-Fi, repeated starts, early data, deadline cleanup, stale queued work on flaps, single timer rescheduling, mixed/null/unsatisfied path suspension and resumed settling.
-- Retirement ownership/error paths: natural closure, handler clear/replace, stale terminal callbacks, native endpoint-failure reentry that creates a replacement, path-query reentry, capacity/ID/handler skips, disabled/missing-hook initialization, queue/monitor allocation failure and clock failure. Endpoint calls run without a held registry mutex; new replacement objects remain alive and untouched.
-- Endpoint requests with deferred native results: retained references, awaiting state, no duplicate request during network flaps, WAITING/READY recovery on the same NW object, rearming on the next handover, native cleanup and ignored late callbacks.
-- Coherent diagnostic publication, all names, per-row/global retirement updates, partial-write recovery and denied access. The actual formatter renders normal, awaiting, suspended, disabled and unavailable retirement states with explicit limitations.
-- Actual installer/controller scripts, automatic enablement and one installation reload, fresh/upgrade/reinstall, failure handling, manual disable and read-only doctor.
+## Memory checks — passed
 
-The sanitizer run compiles `tests/test_retirement.c` and `tests/test_nw_observer.c` with clang `-target x86_64-linux-gnu -fblocks -fPIE -O1 -g -fsanitize=address,undefined`, includes `tests/include` and the vendored Blocks runtime, and links using the host compiler with the same sanitizers. Runtime objects and Connections.c are instrumented too. Retirement's main/disabled/missing/queue-failure/monitor-failure cases and the observer case pass with `UBSAN_OPTIONS=halt_on_error=1`.
+`python3 tests/sanitize.py --clang /path/to/clang` passes all 17 retirement scenarios and the NW observer fixture. Production modules and the test Blocks runtime use ASan/UBSan with `-fPIE -O1 -g -fsanitize=address,undefined` and `UBSAN_OPTIONS=halt_on_error=1`.
 
-These are deterministic host fixtures, not a live iOS concurrency or integration test. They cannot establish the path monitor's interface classification under Surge, or apsd's response to an externally initiated cancellation.
+Leak detection is disabled (`ASAN_OPTIONS=detect_leaks=0`); no leak-detector result is claimed. Explicit reference-count fixtures cover ownership and release paths. Deterministic host tests do not reproduce live iOS concurrency or CFNetwork integration.
 
-## Build and package gates
+## Source and compiled-runtime preservation — passed
 
-The cross-build uses cached clang 13 revision f765bf5b71fd3637a6f6d1d3e6ab95ca91892a0c and the iPhoneOS14.5 SDK. Makefile and build.py share eleven C units for arm64 and legacy arm64e, with a standalone arm64 doctor. Eleven known legacy arm64e ABI warnings remain. BUILD-REPORT.txt records the compiler, dependencies and output hashes.
+Four source files differ from experimental2: Version.h, RetirementStatus.h, Retirement.c and Diagnose.c. The other 35 source/vendor files are byte-identical. The installer/controller/configuration payload, apsd-only filter and Makefile are also unchanged.
 
-`python3 tests/verify_package.py` checks release name/version, upgrade ordering from 1.1.0 and experimental6, the apsd-only filter, automatic activation, shell syntax, permissions and all ad-hoc signature page hashes. It requires protocol v22 and endpoint/monitor diagnostics, and rejects runtime logging, process signals, new create/start/send/receive imports, connection-queue mutation, retired NECP result masking, DNS/proxy mutation and probes. Current-endpoint cancellation remains dynamically resolved without a terminal-cancellation fallback.
+All eleven tweak translation units produce byte-identical optimized LLVM IR on both arm64 and arm64e after normalizing only the baseline version/build identity to the release values. This includes the retirement duration cleanup. PRESERVATION.txt records the 22 matching hashes. The standalone doctor's printf format intentionally changes to use the shared duration constant; its displayed output is separately verified by the host fixture. Whole-package binary identity is not claimed.
 
-The source archive includes the release installer and unchanged working experimental6 rollback installer, source/tests/docs, BUILD-REPORT.txt and PRESERVATION-REPORT.txt. SHA256SUMS.txt covers every included member except itself. Archive CRC, member digests and equality of standalone installer/README with archived copies are verified before delivery. Obsolete experimental rollback installers are omitted from the release bundle.
+## Cross-build and package checks — passed
 
-## Verification scope
+The build uses the same compiler bytes as experimental2, restored from [swift-toolchain-linux v2.1.0](https://github.com/kabiroberai/swift-toolchain-linux/releases/tag/v2.1.0): `swift-5.6.1-ubuntu20.04.tar.xz`, 611901876 bytes, SHA-256 `7f7447fde0ca40e5854f732317aa66f5687ae200cb82ab08960b78a925fbcca4`. Clang revision is `f765bf5b71fd3637a6f6d1d3e6ab95ca91892a0c`; executable SHA-256 is `663ade232fdb6e28e16740b89e310de0b85afe9edc2d2e3b7801c8e6e9ed9833`.
 
-The host regressions and targeted lifecycle ASan/UBSan run pass. Leak detection is disabled (`ASAN_OPTIONS=detect_leaks=0`); no leak-detector result is claimed. Explicit reference-count fixtures cover release/cleanup paths. These are deterministic host tests rather than live iOS concurrency tests.
+The iPhoneOS14.5 SDK is from [theos/sdks commit 0222fd5413cf4b9af096f37b4621afa2688572f7](https://github.com/theos/sdks/tree/0222fd5413cf4b9af096f37b4621afa2688572f7/iPhoneOS14.5.sdk). The cross-build succeeds for arm64 and legacy arm64e with a standalone arm64 doctor. Eleven known legacy arm64e ABI linker warnings remain; no other warning is accepted. BUILD-REPORT.txt records compiler, dependencies, warnings and hashes. A native Xcode/Theos build remains an alternative for incompatible jailbreak environments.
 
-For any new handover issue, keep the same apsd PID through cellular → Wi-Fi → cellular and compare doctor status, generation, requests, awaiting state, and skips. Confirm old TCP/Surge entry closure and notification delivery separately. Object IDs can survive endpoint fallback; a zero pending count alone does not prove closure. No zero-delay or zero-init-traffic guarantee is made. The unchanged working experimental6 installer is included for rollback.
+`python3 tests/verify_package.py` passes. It checks release metadata and ordering above 1.2.0 and both 1.2.1 prereleases, matching source/package identity, apsd-only injection, activation scripts/modes/configuration, both dylib slices and every ad-hoc signature page hash including doctor. It requires v24 and the quiet/VPN fields, rejects the removed receive-retirement callback, and preserves checks against runtime logging, process signals, injected create/start/send/receive calls, terminal-cancel imports, callback-queue changes, proxy/parameter/DNS mutations and historical NECP result masking.
+
+## Archive and rollback
+
+The archive contains current source/tests/documentation, the release installer and two unchanged rollback installers:
+
+| Installer | SHA-256 |
+| --- | --- |
+| 1.2.0 | `31633c7bf96312613aa52f53486db6a56e60166c32a885546af89e1e459fef11` |
+| 1.2.1~experimental2 | `9b2e32f7da6a3a82aebb7510b0f2da2aa8fa53a938d922148e260627fe19a54e` |
+
+The older experimental1 rollback payload is omitted from this release bundle. Historical entries remain in CHANGELOG.md and INVESTIGATION.md. No toolchain cache, temporary test output or raw phone logs are included. SHA256SUMS.txt covers every other archive member. ZIP CRC, manifest completeness and standalone installer/README equality are checked before delivery.
+
+## Remaining limits
+
+The quiet interval starts from observed state changes, not an inaccessible UI timestamp. Notifications can coalesce and timers can run late. Unknown/ambiguous states suspend automatic work. A complete off/on cycle returning to the same tunnel identity between all samples cannot be identified. Native/owner closures are not delayed. Late readiness can need later work. Coverage remains eight tracked matching apsd objects with usable handlers, and the tunnel is not authenticated as Surge-owned.
+
+The release should load as 1.2.1 with protocol v24 after the single installation reload. Any subsequent phone check should keep apsd PID unchanged across the tested sequence and verify old Surge entries and a fresh delivered notification separately. The release label is not a guarantee of zero reconnection delay, zero init traffic or identical behavior on other devices/VPN configurations.

@@ -1,22 +1,26 @@
-/* Retire connections established before an observed Wi-Fi/cellular transition.
-   The registry holds eight references at most. An endpoint-request batch
-   temporarily owns up to eight more; only one current-path sample runs at once.
-   One monitor, one delayed callback and one coalesced work callback are used.
-   No app queues or NECP output change. Requests/releases run outside the mutex. */
+/* Coalesce physical-network and VPN transitions behind one quiet-period gate.
+   Eight registry references and up to eight temporary batch references are
+   owned. One path monitor, one quiet timer, one VPN check timer and one
+   coalesced work callback share a serial queue. Native callbacks/queues and
+   NECP output stay intact; endpoint requests/releases run outside the mutex. */
 #include "Retirement.h"
 #include "Connections.h"
 #include "Diagnostics.h"
+#include "TunnelSelector.h"
 #include <dispatch/dispatch.h>
 #include <errno.h>
 #include <pthread.h>
+#include <notify.h>
+#include <string.h>
 #include <time.h>
 
-#define RETIRE_WINDOW_NS UINT64_C(3000000000)
+#define QUIET_NS (APR_QUIET_PERIOD_MS * UINT64_C(1000000))
+#define VPN_CHECK_NS UINT64_C(1000000000)
 #define RETIRE_LIMIT APR_CONNECTION_COUNT
 typedef struct {
     nw_connection_t connection;
-    uint32_t id,handler,ready_epoch;
-    bool ready,ever_ready,awaiting;
+    uint32_t id,handler,ready_epoch,vpn_epoch;
+    bool ever_ready,awaiting;
 } HeldConnection;
 static HeldConnection held[RETIRE_LIMIT];
 static pthread_mutex_t retirement_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -24,35 +28,56 @@ static dispatch_queue_t retirement_queue;
 static nw_path_monitor_t monitor;
 static APRRetireFunction request_endpoint_cancellation;
 static APRRetirementStatus report;
-static bool initialized,active,timer_scheduled,work_scheduled,sample_busy;
-static uint32_t last_network,fresh_epoch;
+static bool initialized,active,timer_scheduled,work_scheduled;
+static uint32_t last_network,last_vpn;
 static uint64_t deadline;
+static APRTunnel last_tunnel;
+static int vpn_notify_token;
+static void timer_fired(void *unused);
+static void work_fired(void *unused);
+static void vpn_check(void *unused);
+static void vpn_tick(void *unused);
 
 static void increment(uint32_t *value) {if(*value!=UINT32_MAX) ++*value;}
 static unsigned find_id(uint32_t id) {
     if(id) for(unsigned i=0;i<RETIRE_LIMIT;++i) if(held[i].id==id) return i;
     return RETIRE_LIMIT;
 }
-/* Caller holds retirement_lock. Transfer the reference for release outside it. */
+/* Caller holds retirement_lock. Transfer ownership for release outside it. */
 static nw_connection_t detach_connection(unsigned slot) {
     nw_connection_t connection=held[slot].connection;
     held[slot]=(HeldConnection){0};
     return connection;
 }
-static bool should_retire(const HeldConnection *entry) {
-    return entry->id && entry->ever_ready && !entry->awaiting && entry->ready_epoch && entry->ready_epoch<report.epoch;
+static bool older_physical(const HeldConnection *entry) {
+    return entry->id && entry->ever_ready && entry->ready_epoch && entry->ready_epoch<report.epoch;
+}
+static bool older_vpn(const HeldConnection *entry) {
+    return entry->id && entry->vpn_epoch && entry->vpn_epoch<report.vpn_epoch;
+}
+static bool eligible(const HeldConnection *entry) {
+    return entry->ever_ready && !entry->awaiting && (older_physical(entry) || older_vpn(entry));
+}
+static bool vpn_known(void) {return report.vpn_state==APR_VPN_ON || report.vpn_state==APR_VPN_OFF;}
+static bool observations_known(void) {
+    /* VPN may establish its baseline before the first physical-path callback.
+       Once a physical baseline exists, losing it suspends all automatic work. */
+    return vpn_known() && (!report.epoch || report.network);
 }
 static void publish(void) {
-    report.held=0;
-    report.pending=0;
-    report.awaiting=0;
+    report.held=report.pending=report.awaiting=report.vpn_pending=0;
     for(unsigned i=0;i<RETIRE_LIMIT;++i) if(held[i].id) {
         ++report.held;
-        if(should_retire(&held[i])) ++report.pending;
+        if(eligible(&held[i])) ++report.pending;
+        if(older_vpn(&held[i])) ++report.vpn_pending;
         if(held[i].awaiting) ++report.awaiting;
     }
-    if(active) report.status=!report.epoch?APR_RET_WAITING:!report.network?APR_RET_UNKNOWN:
-        report.pending?APR_RET_SETTLING:report.awaiting?APR_RET_RECOVERING:APR_RET_IDLE;
+    if(active) {
+        if(report.quiet_state!=APR_QUIET_IDLE && !observations_known()) report.quiet_state=APR_QUIET_BLOCKED;
+        report.status=report.quiet_state==APR_QUIET_BLOCKED?APR_RET_UNKNOWN:
+            report.quiet_state==APR_QUIET_WAITING || report.pending?APR_RET_SETTLING:
+            report.awaiting?APR_RET_RECOVERING:!report.epoch && !report.vpn_epoch?APR_RET_WAITING:APR_RET_IDLE;
+    }
     apr_diag_retirement(&report);
 }
 static unsigned network_type(nw_path_t path) {
@@ -65,7 +90,7 @@ static bool now_ns(uint64_t *value) {
     struct timespec now;
     if(clock_gettime(CLOCK_MONOTONIC,&now)) return false;
     if(now.tv_sec<0 || now.tv_nsec<0 || now.tv_nsec>=1000000000L ||
-       (uint64_t)now.tv_sec>(UINT64_MAX-RETIRE_WINDOW_NS-999999999)/UINT64_C(1000000000)) {
+       (uint64_t)now.tv_sec>(UINT64_MAX-QUIET_NS-999999999)/UINT64_C(1000000000)) {
         errno=EOVERFLOW;return false;
     }
     *value=(uint64_t)now.tv_sec*UINT64_C(1000000000)+(uint64_t)now.tv_nsec;
@@ -73,48 +98,122 @@ static bool now_ns(uint64_t *value) {
 }
 static unsigned stop(int error,nw_connection_t *release) {
     unsigned count=0;active=false;report.status=APR_RET_UNAVAILABLE;
-    report.error=(uint32_t)(error?error:EIO);fresh_epoch=0;
-    for(unsigned i=0;i<RETIRE_LIMIT;++i) if(held[i].id) {
-        release[count++]=detach_connection(i);
-    }
+    report.error=(uint32_t)(error?error:EIO);
+    report.quiet_state=APR_QUIET_IDLE;report.quiet_remaining_ms=0;
+    for(unsigned i=0;i<RETIRE_LIMIT;++i) if(held[i].id) release[count++]=detach_connection(i);
     return count;
 }
-static void timer_fired(void *unused);
-static void work_fired(void *unused);
+/* Caller holds retirement_lock. An earlier timer is allowed to wake and check
+   the latest deadline; it never carries a captured generation or object list. */
 static void schedule_timer(uint64_t delay) {
     if(timer_scheduled) return;
     timer_scheduled=true;
     dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,(int64_t)delay),retirement_queue,NULL,timer_fired);
+}
+static void schedule_work(void) {
+    if(!work_scheduled) {work_scheduled=true;dispatch_async_f(retirement_queue,NULL,work_fired);}
+}
+static bool note_activity(uint32_t causes) {
+    uint64_t now;
+    if(!now_ns(&now)) return false;
+    if(report.quiet_state==APR_QUIET_IDLE) {
+        if(report.quiet_epoch==UINT32_MAX) {errno=EOVERFLOW;return false;}
+        ++report.quiet_epoch;report.quiet_events=report.quiet_causes=0;
+    }
+    increment(&report.quiet_events);report.quiet_causes|=causes;
+    deadline=now+QUIET_NS;
+    report.quiet_state=APR_QUIET_WAITING;report.quiet_remaining_ms=APR_QUIET_PERIOD_MS;
+    schedule_timer(QUIET_NS);
+    return true;
+}
+static void quiet_remaining(uint64_t now) {
+    report.quiet_remaining_ms=now>=deadline?0:(uint32_t)((deadline-now+999999)/UINT64_C(1000000));
 }
 static void path_changed(nw_path_t path) {
     int saved=errno;unsigned network=network_type(path),count=0;
     nw_connection_t release[RETIRE_LIMIT];
     pthread_mutex_lock(&retirement_lock);
     if(!active) goto done;
-    if(!network) {report.network=0;fresh_epoch=0;publish();goto done;}
-    bool first=!report.epoch,changed=last_network && last_network!=network;
-    bool resumed=!report.network;
+    bool first=!report.epoch,changed=network && last_network && last_network!=network;
+    bool lost=!network && report.network,resumed=network && !report.network && !first;
     if(changed && report.epoch==UINT32_MAX) {count=stop(EOVERFLOW,release);publish();goto done;}
-    report.network=last_network=network;
-    if(first) {
-        report.epoch=1;
-        for(unsigned i=0;i<RETIRE_LIMIT;++i) if(held[i].id && !held[i].ready_epoch) held[i].ready_epoch=1;
-    } else if(changed) {++report.epoch;fresh_epoch=0;}
-    if(changed || resumed) {
-        uint64_t now;
-        if(!now_ns(&now)) {count=stop(errno,release);publish();goto done;}
-        deadline=now+RETIRE_WINDOW_NS;
+    report.network=network;
+    if(network) {
+        last_network=network;
+        if(first) {
+            report.epoch=1;
+            for(unsigned i=0;i<RETIRE_LIMIT;++i) if(held[i].id && !held[i].ready_epoch) held[i].ready_epoch=1;
+        } else if(changed) ++report.epoch;
+    }
+    /* Unknown/resumed observations also extend an in-progress switch. A cold
+       first baseline alone is not a switch and does not retire anything. */
+    if(changed || lost || resumed || (network && first && report.quiet_state!=APR_QUIET_IDLE)) {
+        uint32_t causes=(changed?APR_QUIET_PHYSICAL:0) | (lost || resumed || first?APR_QUIET_UNCERTAIN:0);
+        if(!note_activity(causes)) count=stop(errno,release);
     }
     publish();
-    if(report.pending) schedule_timer(RETIRE_WINDOW_NS);
+done:
+    pthread_mutex_unlock(&retirement_lock);
+    for(unsigned i=0;i<count;++i) nw_release(release[i]);
+    vpn_check(NULL);errno=saved;
+}
+/* Notification delivery is a hint. Validate the same unique, addressed up
+   utun used for routing. Failed/ambiguous snapshots are never VPN-off. */
+static void vpn_check(void *unused) {
+    (void)unused;int saved=errno,error=0;APRTunnel tunnel;
+    pthread_mutex_lock(&retirement_lock);bool enabled=active;pthread_mutex_unlock(&retirement_lock);
+    if(!enabled) {errno=saved;return;}
+    enum apr_tunnel_choice choice=apr_tunnel_select(0,&tunnel,&error);
+    uint32_t state=choice==APR_TUN_UNIQUE?APR_VPN_ON:choice==APR_TUN_NONE?APR_VPN_OFF:
+        choice==APR_TUN_AMBIGUOUS?APR_VPN_AMBIGUOUS:APR_VPN_UNAVAILABLE;
+    nw_connection_t release[RETIRE_LIMIT];unsigned count=0;
+    pthread_mutex_lock(&retirement_lock);
+    if(!active) goto done;
+    bool was_known=vpn_known();uint32_t previous=report.vpn_state,causes=0;
+    report.vpn_state=state;report.vpn_index=state==APR_VPN_ON?tunnel.index:0;
+    report.vpn_error=(uint32_t)error;
+    if(vpn_known()) {
+        bool changed=last_vpn && (last_vpn!=state || (state==APR_VPN_ON &&
+            (last_tunnel.index!=tunnel.index || strcmp(last_tunnel.name,tunnel.name))));
+        if(changed && report.vpn_epoch==UINT32_MAX) {count=stop(EOVERFLOW,release);publish();goto done;}
+        if(!report.vpn_epoch) {
+            report.vpn_epoch=1;
+            for(unsigned i=0;i<RETIRE_LIMIT;++i) if(held[i].id) held[i].vpn_epoch=1;
+            if(report.quiet_state!=APR_QUIET_IDLE) causes|=APR_QUIET_UNCERTAIN;
+        } else {
+            if(!was_known) causes|=APR_QUIET_UNCERTAIN;
+            if(changed) {
+                ++report.vpn_epoch;
+                report.vpn_reason=state==APR_VPN_OFF?APR_RET_VPN_OFF:
+                    last_vpn==APR_VPN_OFF?APR_RET_VPN_ON:APR_RET_VPN_REPLACED;
+                causes|=state==APR_VPN_OFF?APR_QUIET_VPN_OFF:
+                    last_vpn==APR_VPN_OFF?APR_QUIET_VPN_ON:APR_QUIET_VPN_REPLACED;
+            }
+        }
+        last_vpn=state;last_tunnel=tunnel;
+    } else if(report.vpn_epoch && previous!=state) causes|=APR_QUIET_UNCERTAIN;
+    if(causes && !note_activity(causes)) {count=stop(errno,release);publish();goto done;}
+    if(report.quiet_state!=APR_QUIET_IDLE) {
+        uint64_t now;
+        if(!now_ns(&now)) {count=stop(errno,release);publish();goto done;}
+        quiet_remaining(now);
+    } else if(observations_known()) {
+        for(unsigned i=0;i<RETIRE_LIMIT;++i) if(eligible(&held[i])) {schedule_work();break;}
+    }
+    publish();
 done:
     pthread_mutex_unlock(&retirement_lock);
     for(unsigned i=0;i<count;++i) nw_release(release[i]);
     errno=saved;
 }
-void apr_retirement_init(bool enabled,APRRetireFunction request_endpoint) {
-    int saved=errno;
+static void vpn_tick(void *unused) {
+    int saved=errno;vpn_check(unused);
     pthread_mutex_lock(&retirement_lock);
+    if(active) dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,VPN_CHECK_NS),retirement_queue,NULL,vpn_tick);
+    pthread_mutex_unlock(&retirement_lock);errno=saved;
+}
+void apr_retirement_init(bool enabled,APRRetireFunction request_endpoint) {
+    int saved=errno;pthread_mutex_lock(&retirement_lock);
     if(initialized) {pthread_mutex_unlock(&retirement_lock);errno=saved;return;}
     initialized=true;
     if(!enabled || !request_endpoint) {
@@ -131,28 +230,28 @@ void apr_retirement_init(bool enabled,APRRetireFunction request_endpoint) {
     }
     request_endpoint_cancellation=request_endpoint;active=true;publish();
     pthread_mutex_unlock(&retirement_lock);
-    /* The dedicated queue belongs to the monitor/retirement work only. apsd's
-       connection queues and state/path/viability handlers are left intact. */
+    uint32_t notify_status=notify_register_dispatch("com.apple.system.config.network_change",
+        &vpn_notify_token,retirement_queue,^(int token) {(void)token;vpn_check(NULL);});
+    pthread_mutex_lock(&retirement_lock);
+    report.vpn_notify=notify_status==NOTIFY_STATUS_OK?1:2;
+    report.vpn_notify_error=notify_status;publish();
+    pthread_mutex_unlock(&retirement_lock);
+    dispatch_async_f(retirement_queue,NULL,vpn_tick);
     nw_path_monitor_set_queue(monitor,retirement_queue);
     nw_path_monitor_set_update_handler(monitor,^(nw_path_t path) {path_changed(path);});
-    nw_path_monitor_start(monitor);
-    errno=saved;
+    nw_path_monitor_start(monitor);errno=saved;
 }
 void apr_retirement_start(nw_connection_t connection,uint32_t id,uint32_t handler) {
     int saved=errno;pthread_mutex_lock(&retirement_lock);
     if(!active) goto done;
     if(!connection || !id || !handler) {increment(&report.skipped);publish();goto done;}
     unsigned slot=find_id(id);
-    if(slot<RETIRE_LIMIT) goto done; /* A repeated start cannot refresh its birth. */
+    if(slot<RETIRE_LIMIT) goto done;
     for(slot=0;slot<RETIRE_LIMIT;++slot) if(!held[slot].id) break;
     if(slot==RETIRE_LIMIT) {increment(&report.skipped);publish();goto done;}
-    nw_retain(connection); /* Own a reference before the caller can release it. */
-    held[slot]=(HeldConnection){
-        .connection=connection,
-        .id=id,
-        .handler=handler,
-        .ready_epoch=report.epoch
-    };
+    nw_retain(connection);
+    held[slot]=(HeldConnection){.connection=connection,.id=id,.handler=handler,
+        .ready_epoch=report.epoch,.vpn_epoch=report.vpn_epoch};
     publish();
 done:
     pthread_mutex_unlock(&retirement_lock);errno=saved;
@@ -168,85 +267,57 @@ void apr_retirement_forget(uint32_t id) {
 void apr_retirement_handler(uint32_t id,uint32_t handler) {
     if(!handler) {apr_retirement_forget(id);return;}
     int saved=errno;pthread_mutex_lock(&retirement_lock);unsigned slot=find_id(id);
-    if(slot<RETIRE_LIMIT) {held[slot].handler=handler;held[slot].ready=false;}
+    if(slot<RETIRE_LIMIT) held[slot].handler=handler;
     pthread_mutex_unlock(&retirement_lock);errno=saved;
 }
 void apr_retirement_state(uint32_t id,uint32_t handler,unsigned state) {
     int saved=errno;nw_connection_t release=NULL;
     pthread_mutex_lock(&retirement_lock);unsigned slot=find_id(id);
     if(slot<RETIRE_LIMIT && handler && held[slot].handler==handler) {
-        if(state==nw_connection_state_failed || state==nw_connection_state_cancelled) {
-            release=detach_connection(slot);publish();
-        } else {
-            held[slot].ready=state==nw_connection_state_ready;
-            if(held[slot].ready && (!held[slot].ever_ready || held[slot].awaiting)) {
-                /* A connection still establishing when the monitor changes is
-                   fresh when it first becomes ready on the new generation.
-                   Native endpoint recovery rearms the same owned NW object. */
-                held[slot].ready_epoch=report.epoch;
-                held[slot].ever_ready=true;
-                held[slot].awaiting=false;
-                publish();
-            }
+        if(state==nw_connection_state_failed || state==nw_connection_state_cancelled) release=detach_connection(slot);
+        else if(state==nw_connection_state_ready && (!held[slot].ever_ready || held[slot].awaiting)) {
+            held[slot].ready_epoch=report.epoch;held[slot].ever_ready=true;held[slot].awaiting=false;
+            /* A later VPN generation survives native recovery. Readiness can
+               queue work, but cannot reset or bypass the shared quiet gate. */
+            if(eligible(&held[slot]) && report.quiet_state==APR_QUIET_IDLE) schedule_work();
         }
+        publish();
     }
     pthread_mutex_unlock(&retirement_lock);
     if(release) nw_release(release);
     errno=saved;
 }
-void apr_retirement_received(uint32_t id) {
-    int saved=errno;nw_connection_t connection=NULL;uint32_t epoch=0,network=0;
-    pthread_mutex_lock(&retirement_lock);unsigned slot=find_id(id);
-    if(active && !sample_busy && report.pending && report.network && slot<RETIRE_LIMIT &&
-       held[slot].ready && held[slot].ready_epoch==report.epoch) {
-        sample_busy=true;
-        connection=held[slot].connection;nw_retain(connection);
-        epoch=report.epoch;network=report.network;
-    }
-    pthread_mutex_unlock(&retirement_lock);
-    if(connection) {
-        nw_path_t path=nw_connection_copy_current_path(connection);
-        unsigned observed=network_type(path);
-        if(path) nw_release(path);
-        pthread_mutex_lock(&retirement_lock);sample_busy=false;slot=find_id(id);
-        if(active && epoch==report.epoch && network==report.network && observed==network &&
-           slot<RETIRE_LIMIT && held[slot].connection==connection && held[slot].ready && held[slot].ready_epoch==epoch) {
-            fresh_epoch=epoch;
-            if(!work_scheduled) {work_scheduled=true;dispatch_async_f(retirement_queue,NULL,work_fired);}
-        }
-        pthread_mutex_unlock(&retirement_lock);nw_release(connection);
-    }
-    errno=saved;
-}
 static void drain(bool timer) {
     int saved=errno;unsigned count=0,release_count=0;
     nw_connection_t connections[RETIRE_LIMIT],release[RETIRE_LIMIT];uint32_t ids[RETIRE_LIMIT];
+    /* Recheck the tunnel immediately before deciding whether the last event
+       really stayed quiet. This can extend the deadline for a missed hint. */
+    vpn_check(NULL);
     pthread_mutex_lock(&retirement_lock);
     if(timer) timer_scheduled=false;else work_scheduled=false;
-    if(!active || !report.network || !report.pending) goto done;
+    if(!active || (report.quiet_state==APR_QUIET_IDLE && !report.pending)) goto done;
     uint64_t now;
     if(!now_ns(&now)) {release_count=stop(errno,release);publish();goto done;}
-    bool fresh=fresh_epoch==report.epoch;
-    if(!fresh && now<deadline) {schedule_timer(deadline-now);goto done;}
-    for(unsigned i=0;i<RETIRE_LIMIT;++i) if(should_retire(&held[i])) {
-        connections[count]=held[i].connection;ids[count++]=held[i].id;
-        /* Endpoint fallback may keep this NW object. Retain the registry entry
-           for later handovers; take an independent reference for this call.
-           No second request is made while native recovery is outstanding. */
-        nw_retain(held[i].connection);
-        held[i].ready_epoch=report.epoch;
-        held[i].ready=false;
-        held[i].awaiting=true;
+    quiet_remaining(now);
+    if(!observations_known()) {report.quiet_state=APR_QUIET_BLOCKED;publish();goto done;}
+    if(now<deadline) {
+        report.quiet_state=APR_QUIET_WAITING;schedule_timer(deadline-now);publish();goto done;
     }
+    report.quiet_state=APR_QUIET_IDLE;
+    for(unsigned i=0;i<RETIRE_LIMIT;++i) if(eligible(&held[i])) {
+        connections[count]=held[i].connection;ids[count++]=held[i].id;
+        nw_retain(held[i].connection);
+        if(older_vpn(&held[i])) {increment(&report.vpn_requests);report.reason=report.vpn_reason;}
+        else report.reason=APR_RET_QUIET;
+        held[i].ready_epoch=report.epoch;held[i].vpn_epoch=report.vpn_epoch;held[i].awaiting=true;
+    }
+    if(count) increment(&report.batches);
     for(unsigned i=0;i<count;++i) {increment(&report.requests);report.last_id=ids[i];}
-    if(count) report.reason=fresh?APR_RET_NEW_DATA:APR_RET_DEADLINE;
     publish();
 done:
     pthread_mutex_unlock(&retirement_lock);
     for(unsigned i=0;i<count;++i) {
-        apr_connection_retire_requested(ids[i]);
-        request_endpoint_cancellation(connections[i]);
-        nw_release(connections[i]);
+        apr_connection_retire_requested(ids[i]);request_endpoint_cancellation(connections[i]);nw_release(connections[i]);
     }
     for(unsigned i=0;i<release_count;++i) nw_release(release[i]);
     errno=saved;

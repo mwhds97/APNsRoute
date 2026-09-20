@@ -173,6 +173,21 @@ void apr_diag_retirement(const APRRetirementStatus *status) {
     transport_set(APR_T_RET_ERROR,status->error);
     transport_set(APR_T_RET_SKIPPED,status->skipped);
     transport_set(APR_T_RET_AWAITING,status->awaiting);
+    transport_set(APR_T_VPN_STATE,status->vpn_state);
+    transport_set(APR_T_VPN_INDEX,status->vpn_index);
+    transport_set(APR_T_VPN_EPOCH,status->vpn_epoch);
+    transport_set(APR_T_VPN_PENDING,status->vpn_pending);
+    transport_set(APR_T_VPN_REQUESTS,status->vpn_requests);
+    transport_set(APR_T_VPN_REASON,status->vpn_reason);
+    transport_set(APR_T_VPN_NOTIFY,status->vpn_notify);
+    transport_set(APR_T_VPN_NOTIFY_ERROR,status->vpn_notify_error);
+    transport_set(APR_T_VPN_ERROR,status->vpn_error);
+    transport_set(APR_T_QUIET_STATE,status->quiet_state);
+    transport_set(APR_T_QUIET_EPOCH,status->quiet_epoch);
+    transport_set(APR_T_QUIET_EVENTS,status->quiet_events);
+    transport_set(APR_T_QUIET_CAUSES,status->quiet_causes);
+    transport_set(APR_T_QUIET_REMAINING_MS,status->quiet_remaining_ms);
+    transport_set(APR_T_RET_BATCHES,status->batches);
     transport_end();pthread_mutex_unlock(&lock);errno=saved;
 }
 void apr_diag_nw_cancel(unsigned action) {
